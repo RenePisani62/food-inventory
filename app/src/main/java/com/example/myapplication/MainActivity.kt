@@ -51,6 +51,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import com.example.myapplication.data.BarcodeNameEntity
 import androidx.compose.material3.Checkbox
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.focusable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+
 
 
 
@@ -68,6 +74,9 @@ class MainActivity : ComponentActivity() {
 
     private var manualShoppingItemInput =
         mutableStateOf("")
+
+    private var pendingUnknownAmount =
+        mutableStateOf(1)
 
     private var checkedShoppingItems =
         mutableStateOf<Set<String>>(emptySet())
@@ -142,15 +151,19 @@ class MainActivity : ComponentActivity() {
                     productLookup.lookupProductName(barcode)
                 }
 
+            val isUnknownProduct =
+                productName.isBlank()
+                        || productName.equals("Unknown Item", ignoreCase = true)
+                        || productName.equals("Unknown", ignoreCase = true)
+                        || productName.contains("not found", ignoreCase = true)
+
             if (
-                productName == "Unknown Item"
+                isUnknownProduct
                 && mode.value == "ADD"
             ) {
-
                 pendingUnknownBarcode.value = barcode
-
                 pendingUnknownNameInput.value = ""
-
+                pendingUnknownAmount.value = amount
                 return@launch
             }
 
@@ -166,6 +179,11 @@ class MainActivity : ComponentActivity() {
                         productToUpdate.id,
                         productToUpdate.quantity + amount
                     )
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Added: ${productToUpdate.itemName}",
+                        Toast.LENGTH_SHORT
+                    ).show()
 
                     dao.updateExpiryDateById(
                         productToUpdate.id,
@@ -185,6 +203,11 @@ class MainActivity : ComponentActivity() {
                         )
 
                     dao.insertProduct(newProduct)
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Added: $productName",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
 
             } else if (mode.value == "DELETE") {
@@ -209,6 +232,11 @@ class MainActivity : ComponentActivity() {
                             amount
                         )
                     }
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Removed: ${productToReduce.itemName}",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
 
@@ -363,17 +391,39 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun HomeScreen() {
+        val barcodeFocusRequester = remember { FocusRequester() }
+        val keyboardController = LocalSoftwareKeyboardController.current
+        LaunchedEffect(Unit) {
+            barcodeFocusRequester.requestFocus()
+
+            kotlinx.coroutines.delay(300)
+            keyboardController?.hide()
+
+            kotlinx.coroutines.delay(500)
+            keyboardController?.hide()
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
+                .padding(bottom = 80.dp)
         ) {
             Text(
                 text = "PantryPal",
                 style = MaterialTheme.typography.headlineMedium
             )
             Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = if (mode.value == "ADD") {
+                    "Current Mode: ADD ITEMS"
+                } else {
+                    "Current Mode: DELETE ITEMS"
+                },
+                style = MaterialTheme.typography.titleMedium
+            )
             if (pendingUnknownBarcode.value != null) {
                 AlertDialog(
                     onDismissRequest = {
@@ -416,38 +466,54 @@ class MainActivity : ComponentActivity() {
 
                         Button(
                             onClick = {
-                                val barcode =
-                                    pendingUnknownBarcode.value
-                                val name =
-                                    pendingUnknownNameInput
-                                        .value
-                                        .trim()
+                                val barcode = pendingUnknownBarcode.value
+                                val name = pendingUnknownNameInput.value.trim()
 
-                                if (
-                                    barcode != null
-                                    && name.isNotBlank()
-                                ) {
+                                if (barcode != null && name.isNotBlank()) {
+
                                     lifecycleScope.launch {
-                                        database
-                                            .productDao()
-                                            .insertBarcodeName(
-                                                BarcodeNameEntity(
+
+                                        val dao = database.productDao()
+
+                                        dao.insertBarcodeName(
+                                            BarcodeNameEntity(
+                                                barcode = barcode,
+                                                name = name,
+                                                lastUpdated = System.currentTimeMillis()
+                                            )
+                                        )
+
+                                        val expiry = expiryInput.value.trim().ifBlank { null }
+
+                                        val existing =
+                                            dao.getProductByBarcodeAndExpiry(barcode, expiry)
+
+                                        val amount = pendingUnknownAmount.value
+
+                                        if (existing != null) {
+                                            dao.updateQuantityById(existing.id, existing.quantity + amount)
+                                        } else {
+                                            dao.insertProduct(
+                                                ProductEntity(
                                                     barcode = barcode,
-                                                    name = name,
-                                                    lastUpdated =
-                                                        System.currentTimeMillis()
+                                                    itemName = name,
+                                                    quantity = amount,
+                                                    lastScanned = System.currentTimeMillis(),
+                                                    expiryDate = expiry,
+                                                    location = selectedLocation.value
                                                 )
                                             )
+                                        }
 
-                                        pendingUnknownBarcode.value =
-                                            null
+                                        refreshProducts()
+                                        expirySummary.value = getExpirySummary()
 
-                                        pendingUnknownNameInput.value =
-                                            ""
-                                    }
-                                    processBarcode(barcode)
+                                        pendingUnknownBarcode.value = null
+                                        pendingUnknownNameInput.value = ""
+                                        pendingUnknownAmount.value = 1
                                     }
                                 }
+                            }
                         ) {
                             Text("Save")
                         }
@@ -494,7 +560,8 @@ class MainActivity : ComponentActivity() {
                 checked = quickScanMode.value,
                 onCheckedChange = {
                     quickScanMode.value = it
-                }
+                },
+                modifier = Modifier.focusable(false)
             )
             Spacer(modifier = Modifier.height(12.dp))
             var expanded by remember { mutableStateOf(false) }
@@ -530,7 +597,9 @@ class MainActivity : ComponentActivity() {
                     }
                 ),
 
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(barcodeFocusRequester)
             )
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -546,6 +615,7 @@ class MainActivity : ComponentActivity() {
                         processBarcode(barcode)
 
                         manualBarcodeInput.value = ""
+                        barcodeFocusRequester.requestFocus()
                     }
                 },
 
@@ -764,6 +834,7 @@ class MainActivity : ComponentActivity() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(16.dp)
+                .padding(bottom = 80.dp)
         ) {
             Text(
                 text = "Inventory",
@@ -840,6 +911,7 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
+                .padding(bottom = 80.dp)
         ) {
 
             Text(
@@ -1014,6 +1086,7 @@ class MainActivity : ComponentActivity() {
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp)
+                .padding(bottom = 80.dp)
         ) {
 
             Text(
@@ -1151,7 +1224,8 @@ class MainActivity : ComponentActivity() {
         val options = ScanOptions().apply {
             setPrompt("Scan a food barcode")
             setBeepEnabled(true)
-            setOrientationLocked(false)
+            setOrientationLocked(true)
+            setCaptureActivity(PortraitCaptureActivity::class.java)
             setDesiredBarcodeFormats(ScanOptions.PRODUCT_CODE_TYPES)
         }
         barcodeLauncher.launch(options)
@@ -1203,7 +1277,13 @@ class MainActivity : ComponentActivity() {
 
             shoppingListItems.value.forEach { item ->
 
-                append("• $item\n")
+                val checked =
+                    checkedShoppingItems.value.contains(item)
+
+                val marker =
+                    if (checked) "☑" else "☐"
+
+                append("$marker $item\n")
             }
         }
     }
