@@ -56,6 +56,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.focusable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import android.util.Log
 
 
 
@@ -142,6 +143,7 @@ class MainActivity : ComponentActivity() {
                     barcode,
                     expiry
                 )
+
 
             val cachedName =
                 dao.getBarcodeName(barcode)
@@ -474,7 +476,7 @@ class MainActivity : ComponentActivity() {
                                     lifecycleScope.launch {
 
                                         val dao = database.productDao()
-
+                                        Log.d("PantryPal", "Saving barcode = '$barcode'")
                                         dao.insertBarcodeName(
                                             BarcodeNameEntity(
                                                 barcode = barcode,
@@ -482,6 +484,7 @@ class MainActivity : ComponentActivity() {
                                                 lastUpdated = System.currentTimeMillis()
                                             )
                                         )
+                                        val verify = dao.getBarcodeName(barcode)
 
                                         val expiry = expiryInput.value.trim().ifBlank { null }
 

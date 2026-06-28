@@ -18,6 +18,8 @@ interface ProductDao {
     suspend fun insertBarcodeName(
         barcodeName: BarcodeNameEntity
     )
+    @Query("SELECT * FROM barcode_names")
+    suspend fun getAllBarcodeNames(): List<BarcodeNameEntity>
     @Query("UPDATE products SET quantity = :quantity WHERE id = :id")
     suspend fun updateQuantityById(id: Int, quantity: Int)
 
@@ -71,5 +73,16 @@ interface ProductDao {
     suspend fun getProductByBarcodeAndExpiry(
         barcode: String,
         expiry: String?
-    ): ProductEntity?
+    )
+    : ProductEntity?
+    @Query("""
+    SELECT *
+    FROM products
+    WHERE barcode = :barcode
+    ORDER BY expiryDate ASC
+        """)
+    suspend fun getProductsByBarcode(
+        barcode: String
+    ): List<ProductEntity>
+
 }
