@@ -105,7 +105,8 @@ class MainActivity : ComponentActivity() {
     private var shoppingListItems =
         mutableStateOf(mutableListOf<String>())
 
-    private val categories = listOf(
+
+        private val categories = listOf(
         "Pantry Dry Goods",
         "Canned Goods",
         "Refrigerated: Fresh",
@@ -1435,23 +1436,49 @@ class MainActivity : ComponentActivity() {
     }
     private suspend fun refreshShoppingList() {
 
-        val currentItems =
-            shoppingListItems.value.toMutableList()
-
-        val generatedItems =
-            generateShoppingList()
+        val generatedItems = generateShoppingList()
 
         generatedItems.forEach { generatedItem ->
 
-            if (!currentItems.any {
-                    it.equals(generatedItem, ignoreCase = true)
-                }) {
+            val existing =
+                database.shoppingDao().findByDescription(
+                    generatedItem.lowercase().trim()
+                )
 
-                currentItems.add(generatedItem)
+            if (existing == null) {
+
+                database.shoppingDao().insertItem(
+
+                    ShoppingItemEntity(
+
+                        description = generatedItem,
+
+                        normalisedDescription =
+                            generatedItem.lowercase().trim(),
+
+                        source = "AUTO"
+                    )
+                )
             }
         }
 
-        shoppingListItems.value = currentItems
+        val shoppingItems =
+            database.shoppingDao().getAllItems()
+
+        shoppingListItems.value =
+            shoppingItems
+                .map { it.description }
+                .toMutableList()
+    }
+
+
+
+
+    private suspend fun loadShoppingItems(): List<ShoppingItemEntity> {
+
+        return database
+            .shoppingDao()
+            .getAllItems()
     }
     private suspend fun generateShoppingList(): List<String> {
 
