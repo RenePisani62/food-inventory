@@ -57,6 +57,8 @@ import androidx.compose.foundation.focusable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import android.util.Log
+import com.example.myapplication.data.ShoppingItemEntity
+
 
 
 
@@ -364,6 +366,16 @@ class MainActivity : ComponentActivity() {
 
         database = AppDatabase.getDatabase(this)
         refreshProducts()
+        lifecycleScope.launch {
+
+            val shoppingItems =
+                database.shoppingDao().getAllItems()
+
+            shoppingListItems.value =
+                shoppingItems
+                    .map { it.description }
+                    .toMutableList()
+        }
 
         lifecycleScope.launch {
             expirySummary.value = getExpirySummary()
@@ -494,7 +506,10 @@ class MainActivity : ComponentActivity() {
                                         val amount = pendingUnknownAmount.value
 
                                         if (existing != null) {
-                                            dao.updateQuantityById(existing.id, existing.quantity + amount)
+                                            dao.updateQuantityById(
+                                                existing.id,
+                                                existing.quantity + amount
+                                            )
                                         } else {
                                             dao.insertProduct(
                                                 ProductEntity(
@@ -556,7 +571,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     // Spacer(modifier = Modifier.width(8.dp))
                 }
-               //  Spacer(modifier = Modifier.height(12.dp))
+                //  Spacer(modifier = Modifier.height(12.dp))
             }
             Text("Quick Scan Mode")
             Switch(
@@ -726,19 +741,25 @@ class MainActivity : ComponentActivity() {
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))
+
+            Spacer(modifier = Modifier.height(12.dp))
+            // Spacer(modifier = Modifier.height(12.dp))
+
             Button(
                 onClick = {
+
                     lifecycleScope.launch {
-                        shoppingListItems.value =
-                            generateShoppingList().toMutableList()
+
+                        refreshShoppingList()
+
                         currentScreen.value = "SHOPPING"
                     }
                 },
                 modifier = Modifier.fillMaxWidth()
-                ) {
-                Spacer(modifier = Modifier.height(16.dp))
-                Text("Generate Shopping List")
+            ) {
+                Text("Shopping List")
             }
+
             Spacer(modifier = Modifier.height(12.dp))
 
             Button(
@@ -750,7 +771,6 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("Check Inventory")
             }
-
             Spacer(modifier = Modifier.height(12.dp))
 
 
@@ -804,6 +824,7 @@ class MainActivity : ComponentActivity() {
                             onClick = {
                                 lifecycleScope.launch {
                                     database.productDao().clearAllProducts()
+                                    database.shoppingDao().clearAll()
                                     refreshProducts()
                                     expirySummary.value = getExpirySummary()
                                     shoppingListItems.value = mutableListOf()
@@ -1120,10 +1141,45 @@ class MainActivity : ComponentActivity() {
 
                     if (item.isNotBlank()) {
 
-                        shoppingListItems.value.add(item)
+                        lifecycleScope.launch {
+                            val existing =
+                                database.shoppingDao().findByDescription(
+                                    item.lowercase().trim()
+                                )
 
-                        shoppingListItems.value =
-                            shoppingListItems.value.toMutableList()
+                            if (existing != null) {
+
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Item already exists in your shopping list",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+
+                                return@launch
+                            }
+
+                            database.shoppingDao().insertItem(
+
+                                ShoppingItemEntity(
+
+                                    description = item,
+
+                                    normalisedDescription = item
+                                        .trim()
+                                        .lowercase(),
+
+                                    source = "MANUAL"
+                                )
+                            )
+
+                            val shoppingItems =
+                                database.shoppingDao().getAllItems()
+
+                            shoppingListItems.value =
+                                shoppingItems
+                                    .map { it.description }
+                                    .toMutableList()
+                        }
 
                         manualShoppingItemInput.value = ""
                     }
@@ -1175,33 +1231,17 @@ class MainActivity : ComponentActivity() {
 
             Button(
                 onClick = {
-                    val shareIntent = Intent().apply {
-                        action = Intent.ACTION_SEND
-                        putExtra(Intent.EXTRA_TEXT, buildShoppingListText())
-                        type = "text/plain"
+
+                    lifecycleScope.launch {
+
+                        refreshShoppingList()
+
+                        currentScreen.value = "SHOPPING"
                     }
-
-                    startActivity(
-                        Intent.createChooser(
-                            shareIntent,
-                            "Share Shopping List"
-                        )
-                    )
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Share Shopping List")
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Button(
-                onClick = {
-                    copyShoppingListToClipboard()
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Copy Shopping List")
+                Text("Shopping List")
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -1392,6 +1432,26 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             Color.Gray
         }
+    }
+    private suspend fun refreshShoppingList() {
+
+        val currentItems =
+            shoppingListItems.value.toMutableList()
+
+        val generatedItems =
+            generateShoppingList()
+
+        generatedItems.forEach { generatedItem ->
+
+            if (!currentItems.any {
+                    it.equals(generatedItem, ignoreCase = true)
+                }) {
+
+                currentItems.add(generatedItem)
+            }
+        }
+
+        shoppingListItems.value = currentItems
     }
     private suspend fun generateShoppingList(): List<String> {
 

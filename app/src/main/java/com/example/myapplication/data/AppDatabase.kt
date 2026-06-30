@@ -9,13 +9,16 @@ import com.example.myapplication.data.ProductEntity
 @Database(
     entities = [
         ProductEntity::class,
-        BarcodeNameEntity::class
+        BarcodeNameEntity::class,
+        ShoppingItemEntity::class
     ],
-    version = 5
+    version = 6
 )
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun productDao(): ProductDao
+
+    abstract fun shoppingDao(): ShoppingDao
 
     companion object {
         @Volatile
