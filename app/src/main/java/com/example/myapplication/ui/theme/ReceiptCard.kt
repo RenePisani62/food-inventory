@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.myapplication.data.ReceiptParser
+import com.example.myapplication.data.displayDetails
 
 @Composable
 fun ReceiptCard(
@@ -134,16 +135,60 @@ fun ReceiptCard(
                 val parsed =
                     ReceiptParser.parse(receipt.rawText)
 
-                parsed.products.forEach { product ->
+                if (parsed.structuredItems.isNotEmpty()) {
 
-                    Text(
-                        text = "• $product",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                    parsed.structuredItems.forEach { item ->
 
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp)
+                        ) {
+
+                            Text(
+                                text = item.name,
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+
+                            Spacer(
+                                modifier = Modifier.height(2.dp)
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+
+                                Text(
+                                    text = item.displayDetails(),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+
+                                Text(
+                                    text =
+                                        item.totalPrice
+                                            ?.let {
+                                                "$%.2f".format(it)
+                                            }
+                                            ?: "",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        }
+                    }
+
+                } else {
+
+                    parsed.products.forEach { product ->
+
+                        Text(
+                            text = "• $product",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
                 }
+            }
             }
         }
     }
 
-}

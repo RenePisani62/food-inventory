@@ -12,3 +12,31 @@ data class ParsedReceiptItem(
 
     val totalPrice: Double? = null
 )
+
+fun ParsedReceiptItem.displayDetails(): String {
+
+    return when {
+
+        unit == "kg" &&
+                quantity != null &&
+                unitPrice != null -> {
+
+            "%.3f kg @ $%.2f/kg".format(
+                quantity,
+                unitPrice
+            )
+        }
+
+        quantity != null &&
+                quantity > 1 &&
+                unitPrice != null -> {
+
+            "%.0f × $%.2f".format(
+                quantity,
+                unitPrice
+            )
+        }
+
+        else -> ""
+    }
+}
