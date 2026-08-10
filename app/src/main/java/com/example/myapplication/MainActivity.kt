@@ -44,7 +44,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.remember
 import android.content.SharedPreferences
 import androidx.compose.material3.Switch
-import androidx.compose.ui.Alignment
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -58,10 +57,20 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import android.util.Log
 import com.example.myapplication.data.ShoppingItemEntity
-
-
-
-
+import com.example.myapplication.data.ProductKnowledgeResolver
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.text.PDFTextStripper
+import android.net.Uri
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.example.myapplication.data.ReceiptEntity
+import com.example.myapplication.data.ReceiptParser
+import com.example.myapplication.data.RetailerThemeResolver
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.Icon
+import androidx.compose.ui.Alignment
 
 class MainActivity : ComponentActivity() {
 
@@ -102,8 +111,12 @@ class MainActivity : ComponentActivity() {
 
     private var shoppingListDialogVisible = mutableStateOf(false)
 
+    private var receiptItems =
+        mutableStateOf<List<ReceiptEntity>>(emptyList())
     private var shoppingListItems =
         mutableStateOf(mutableListOf<String>())
+    private var showClearReceiptsDialog =
+        mutableStateOf(false)
 
 
         private val categories = listOf(
@@ -196,6 +209,13 @@ class MainActivity : ComponentActivity() {
                     )
 
                 } else {
+                    val knowledge =
+                        ProductKnowledgeResolver.resolve(productName)
+
+                    val resolvedExpiry =
+                        expiry ?: java.time.LocalDate.now()
+                            .plusDays(knowledge.suggestedShelfLifeDays.toLong())
+                            .toString()
 
                     val newProduct =
                         ProductEntity(
@@ -203,8 +223,8 @@ class MainActivity : ComponentActivity() {
                             itemName = productName,
                             quantity = amount,
                             lastScanned = System.currentTimeMillis(),
-                            expiryDate = expiry,
-                            location = selectedLocation.value
+                            expiryDate = resolvedExpiry,
+                            location = knowledge.storageLocation
                         )
 
                     dao.insertProduct(newProduct)
@@ -274,6 +294,90 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    private val importReceiptLauncher =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+
+            if (uri != null) {
+
+                lifecycleScope.launch {
+
+                    val text = readPdfText(uri)
+                    val parsedReceipt =
+
+                        ReceiptParser.parse(text)
+
+                    val receipt =
+
+                        ReceiptEntity(
+                            storeName =
+                                parsedReceipt.storeName,
+
+                            receiptDate =
+                                parsedReceipt.receiptDate,
+
+                            totalAmount =
+                                parsedReceipt.totalAmount,
+
+                            receiptNumber =
+                                parsedReceipt.receiptNumber,
+
+                            rawText = text
+                        )
+                    val products =
+
+                        ReceiptParser.extractProducts(text)
+
+                    products.forEach {
+
+                        android.util.Log.d("ReceiptProducts", it)
+
+                    }
+                    val existingReceipt =
+
+                        receipt.receiptNumber?.let {
+
+                            database
+                                .receiptDao()
+                                .getReceiptByNumber(it)
+
+                        }
+                    if (existingReceipt == null) {
+
+                        database
+                            .receiptDao()
+                            .insertReceipt(receipt)
+
+                        refreshReceipts()
+
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Receipt saved (${text.length} characters)",
+                            Toast.LENGTH_LONG
+                        ).show()
+
+                    } else {
+
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Receipt already imported",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+
+                    Toast.makeText(
+
+                        this@MainActivity,
+
+                        "Receipt saved (${text.length} characters)",
+
+                        Toast.LENGTH_LONG
+
+                    ).show()
+
+                }
+
+            }
+        }
     private val importCsvLauncher =
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
 
@@ -377,7 +481,7 @@ class MainActivity : ComponentActivity() {
                     .map { it.description }
                     .toMutableList()
         }
-
+        PDFBoxResourceLoader.init(applicationContext)
         lifecycleScope.launch {
             expirySummary.value = getExpirySummary()
 
@@ -393,6 +497,12 @@ class MainActivity : ComponentActivity() {
                             "DETAIL" -> ProductDetailScreen()
 
                             "SHOPPING" -> ShoppingListScreen()
+
+                            "RECEIPTS" -> {
+
+                                ReceiptScreen()
+
+                            }
 
                             else -> HomeScreen()
                         }
@@ -765,6 +875,25 @@ class MainActivity : ComponentActivity() {
 
             Button(
                 onClick = {
+
+                    lifecycleScope.launch {
+
+                        refreshReceipts()
+
+                        currentScreen.value = "RECEIPTS"
+
+                    }
+
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Receipts")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = {
                     refreshProducts()
                     currentScreen.value = "INVENTORY"
                 },
@@ -859,6 +988,7 @@ class MainActivity : ComponentActivity() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(16.dp)
+                .verticalScroll(rememberScrollState())
                 .padding(bottom = 80.dp)
         ) {
             Text(
@@ -1150,13 +1280,9 @@ class MainActivity : ComponentActivity() {
 
                             if (existing != null) {
 
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    "Item already exists in your shopping list",
-                                    Toast.LENGTH_SHORT
-                                ).show()
 
-                                return@launch
+
+
                             }
 
                             database.shoppingDao().insertItem(
@@ -1244,6 +1370,20 @@ class MainActivity : ComponentActivity() {
             ) {
                 Text("Shopping List")
             }
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = {
+
+                    currentScreen.value = "RECEIPTS"
+
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+
+                Text("Receipts")
+
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -1256,6 +1396,170 @@ class MainActivity : ComponentActivity() {
                 Text("Back to Home")
             }
         }
+    }
+
+    @Composable
+    private fun ReceiptScreen() {
+
+        android.util.Log.e(
+            "PantryPalReceipt",
+            "RECEIPT SCREEN OPENED"
+        )
+
+        Column(
+
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+                .padding(bottom = 80.dp)
+
+        ) {
+
+            Text(
+
+                text = "Receipts",
+
+                style = MaterialTheme.typography.headlineSmall
+
+            )
+
+            Spacer(
+
+                modifier = Modifier.height(16.dp)
+
+            )
+
+
+                if (receiptItems.value.isEmpty()) {
+
+                    Text("No receipts imported yet.")
+
+                } else {
+
+                    receiptItems.value.forEach { receipt ->
+                        android.util.Log.e(
+                            "PantryPalReceipt",
+                            "RECEIPT FOUND: ${receipt.storeName}"
+                        )
+
+                        receipt.rawText.lines().forEachIndexed { index, line ->
+
+                            android.util.Log.e(
+                                "PantryPalReceipt",
+                                "${index + 1}: $line"
+                            )
+                        }
+
+                        var expanded by remember {
+
+                            mutableStateOf(false)
+
+                        }
+                        val theme =
+                            RetailerThemeResolver.getTheme(receipt.storeName)
+
+                        ReceiptCard(
+                            receipt = receipt,
+                            theme = theme,
+                            expanded = expanded,
+                            onExpandToggle = {
+                                expanded = !expanded
+                            }
+                        )
+                    }
+                }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = {
+                    showClearReceiptsDialog.value = true
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Clear Imported Receipts")
+            }
+
+            if (showClearReceiptsDialog.value) {
+
+                AlertDialog(
+                    onDismissRequest = {
+                        showClearReceiptsDialog.value = false
+                    },
+                    title = {
+                        Text("Delete Receipts")
+                    },
+                    text = {
+                        Text("Delete all imported receipts?")
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                lifecycleScope.launch {
+                                    database.receiptDao().deleteAllReceipts()
+                                    refreshReceipts()
+                                    showClearReceiptsDialog.value = false
+                                }
+                            }
+                        ) {
+                            Text("Delete")
+                        }
+                    },
+                    dismissButton = {
+                        Button(
+                            onClick = {
+                                showClearReceiptsDialog.value = false
+                            }
+                        ) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+
+            Spacer(
+
+                modifier = Modifier.height(24.dp)
+
+            )
+
+            Button(
+
+                onClick = {
+
+                    importReceiptLauncher.launch("application/pdf")
+
+                }
+
+            ) {
+
+                Text("Import Receipt")
+
+            }
+
+            Spacer(
+
+                modifier = Modifier.height(16.dp)
+
+            )
+
+            Button(
+
+                onClick = {
+
+                    currentScreen.value = "HOME"
+
+                }
+
+            ) {
+
+                Text("Back")
+
+            }
+
+        }
+
     }
     private fun saveIntakeDefaults() {
         prefs.edit()
@@ -1434,6 +1738,12 @@ class MainActivity : ComponentActivity() {
             Color.Gray
         }
     }
+    private suspend fun refreshReceipts() {
+
+        receiptItems.value =
+            database.receiptDao()
+                .getAllReceipts()
+    }
     private suspend fun refreshShoppingList() {
 
         val generatedItems = generateShoppingList()
@@ -1471,6 +1781,28 @@ class MainActivity : ComponentActivity() {
                 .toMutableList()
     }
 
+    private fun readPdfText(uri: Uri): String {
+
+        return try {
+
+            contentResolver.openInputStream(uri)?.use { input ->
+
+                PDDocument.load(input).use { document ->
+
+                    PDFTextStripper().getText(document)
+
+                }
+
+            } ?: ""
+
+        } catch (e: Exception) {
+
+            e.printStackTrace()
+
+            ""
+
+        }
+    }
 
 
 

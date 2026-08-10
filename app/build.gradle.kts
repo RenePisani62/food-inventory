@@ -62,4 +62,5 @@ dependencies {
     implementation("androidx.room:room-ktx:2.7.2")
     ksp("androidx.room:room-compiler:2.7.2")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 }
