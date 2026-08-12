@@ -90,7 +90,11 @@ class MainActivity : ComponentActivity() {
         mutableStateOf(false)
     private var manualShoppingItemInput =
         mutableStateOf("")
+    private var priceHistorySearch =
+        mutableStateOf("")
 
+    private var priceHistoryResults =
+        mutableStateOf<List<ReceiptItemEntity>>(emptyList())
     private var pendingUnknownAmount =
         mutableStateOf(1)
 
@@ -375,33 +379,9 @@ class MainActivity : ComponentActivity() {
                                         totalPrice = item.totalPrice
                                     )
                                 }
-
                             database
                                 .receiptItemDao()
                                 .insertAll(entities)
-
-                            // Temporary verification
-                            val savedItems =
-                                database
-                                    .receiptItemDao()
-                                    .getItemsForReceipt(receiptId)
-
-                            android.util.Log.e(
-                                "ReceiptPersistence",
-                                "Receipt $receiptId saved ${savedItems.size} structured items"
-                            )
-
-                            savedItems.forEach { item ->
-
-                                android.util.Log.e(
-                                    "ReceiptPersistence",
-                                    "${item.productName} | " +
-                                            "qty=${item.quantity} | " +
-                                            "unit=${item.unit} | " +
-                                            "unitPrice=${item.unitPrice} | " +
-                                            "total=${item.totalPrice}"
-                                )
-                            }
                         }
 
                         refreshReceipts()
@@ -554,6 +534,8 @@ class MainActivity : ComponentActivity() {
                             "DETAIL" -> ProductDetailScreen()
 
                             "SHOPPING" -> ShoppingListScreen()
+
+                            "PRICE_HISTORY" -> PriceHistoryScreen()
 
                             "RECEIPTS" -> {
 
@@ -1068,6 +1050,18 @@ class MainActivity : ComponentActivity() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            Button(
+                onClick = {
+                    currentScreen.value = "PRICE_HISTORY"
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Price History")
+            }
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
             Button(
                 onClick = {
                     currentScreen.value = "HOME"
@@ -1686,6 +1680,18 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.height(16.dp)
 
             )
+            Button(
+                onClick = {
+                    currentScreen.value = "PRICE_HISTORY"
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Price History")
+            }
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
 
             Button(
 
@@ -1695,7 +1701,8 @@ class MainActivity : ComponentActivity() {
 
                 }
 
-            ) {
+            )
+            {
 
                 Text("Back")
 
@@ -1761,6 +1768,130 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+    }
+    @Composable
+    private fun PriceHistoryScreen() {
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp)
+                .padding(bottom = 80.dp)
+        ) {
+
+            Text(
+                text = "Price History",
+                style = MaterialTheme.typography.headlineSmall
+            )
+
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
+
+            OutlinedTextField(
+                value = priceHistorySearch.value,
+                onValueChange = {
+                    priceHistorySearch.value = it
+                },
+                label = {
+                    Text("Product name")
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            Button(
+                onClick = {
+
+                    lifecycleScope.launch {
+
+                        val searchTerm =
+                            priceHistorySearch.value.trim()
+
+                        priceHistoryResults.value =
+                            database
+                                .receiptItemDao()
+                                .getPriceHistory(searchTerm)
+
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Search Price History")
+            }
+
+            Spacer(
+                modifier = Modifier.height(20.dp)
+            )
+
+            if (priceHistoryResults.value.isNotEmpty()) {
+
+                Text(
+                    text = "Purchase History",
+                    style = MaterialTheme.typography.titleMedium
+                )
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+
+                priceHistoryResults.value.forEach { item ->
+
+                    Text(
+                        text = item.productName,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+
+                    Text(
+                        text = item.retailer,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+
+                    item.receiptDate?.let { date ->
+
+                        Text(
+                            text = date,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+
+                    item.unitPrice?.let { price ->
+
+                        Text(
+                            text = "$%.2f".format(price),
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+
+                    Spacer(
+                        modifier = Modifier.height(16.dp)
+                    )
+                }
+
+            } else if (priceHistorySearch.value.isNotBlank()) {
+
+                Text(
+                    text = "No price history found."
+                )
+            }
+
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
+
+            Button(
+                onClick = {
+                    currentScreen.value = "HOME"
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Back to Home")
+            }
+        }
     }
     private fun saveIntakeDefaults() {
         prefs.edit()

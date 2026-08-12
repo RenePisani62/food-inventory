@@ -25,11 +25,12 @@ interface ReceiptItemDao {
     ): List<ReceiptItemEntity>
 
     @Query("""
-        SELECT *
-        FROM receipt_items
-        WHERE productName = :productName
-        ORDER BY receiptDate DESC
-    """)
+    SELECT *
+    FROM receipt_items
+    WHERE productName LIKE '%' || :productName || '%'
+          COLLATE NOCASE
+    ORDER BY id DESC
+""")
     suspend fun getPriceHistory(
         productName: String
     ): List<ReceiptItemEntity>
@@ -41,8 +42,11 @@ interface ReceiptItemDao {
     suspend fun deleteForReceipt(
         receiptId: Long
     )
+
     @Query("""
-    DELETE FROM receipt_items
-""")
+        DELETE FROM receipt_items
+    """)
     suspend fun deleteAll()
+
+
 }
