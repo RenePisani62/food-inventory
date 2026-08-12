@@ -21,14 +21,31 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.myapplication.data.ReceiptParser
 import com.example.myapplication.data.displayDetails
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+
+
 
 @Composable
 fun ReceiptCard(
     receipt: ReceiptEntity,
     theme: RetailerTheme,
     expanded: Boolean,
-    onExpandToggle: () -> Unit
-) {
+    onExpandToggle: () -> Unit,
+    onDelete: () -> Unit,
+    selectionMode: Boolean,
+    selected: Boolean,
+    onSelectionChange: (Boolean) -> Unit
+
+)
+{
+    val showDeleteDialog = remember {
+        mutableStateOf(false)
+    }
+
     Card(
         colors = CardDefaults.cardColors(
             containerColor = theme.accentColor
@@ -41,6 +58,30 @@ fun ReceiptCard(
         Column(
             modifier = Modifier.padding(12.dp)
         ) {
+            if (selectionMode) {
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Start,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+
+                    Checkbox(
+                        checked = selected,
+                        onCheckedChange = { checked ->
+                            onSelectionChange(checked)
+                        }
+                    )
+
+                    Text(
+                        text = if (selected) "Selected" else "Select"
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+            }
 
             Text(
                 text = theme.retailerName,
@@ -186,6 +227,69 @@ fun ReceiptCard(
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Delete receipt",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .clickable {
+                            onDelete()
+                        }
+                        .align(Alignment.End)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Delete receipt",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .clickable {
+                            showDeleteDialog.value = true
+                        }
+                        .align(Alignment.End)
+                )
+                if (showDeleteDialog.value) {
+
+                    AlertDialog(
+                        onDismissRequest = {
+                            showDeleteDialog.value = false
+                        },
+                        title = {
+                            Text("Delete Receipt")
+                        },
+                        text = {
+                            Text(
+                                "Delete this receipt and its associated purchase history?"
+                            )
+                        },
+                        confirmButton = {
+
+                            Button(
+                                onClick = {
+
+                                    showDeleteDialog.value = false
+
+                                    onDelete()
+                                }
+                            ) {
+                                Text("Delete")
+                            }
+                        },
+                        dismissButton = {
+
+                            Button(
+                                onClick = {
+                                    showDeleteDialog.value = false
+                                }
+                            ) {
+                                Text("Cancel")
+                            }
+                        }
+                    )
                 }
             }
             }

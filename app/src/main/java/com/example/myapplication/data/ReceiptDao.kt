@@ -10,7 +10,7 @@ interface ReceiptDao {
     @Insert
     suspend fun insertReceipt(
         receipt: ReceiptEntity
-    )
+    ): Long
 
     @Query("""
         SELECT *
@@ -36,5 +36,12 @@ interface ReceiptDao {
         receiptNumber: String
     ): ReceiptEntity?
 
+    @Query("""
+    DELETE FROM receipts
+    WHERE id = :receiptId
+""")
+    suspend fun deleteReceiptById(
+        receiptId: Int
+    )
 }
 

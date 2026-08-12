@@ -71,6 +71,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.Icon
 import androidx.compose.ui.Alignment
+import com.example.myapplication.data.ReceiptItemEntity
+import androidx.compose.material3.TextButton
+
 
 class MainActivity : ComponentActivity() {
 
@@ -83,7 +86,8 @@ class MainActivity : ComponentActivity() {
     private var products = mutableStateListOf<ProductEntity>()
     private var quantityInput = mutableStateOf("1")
     private var mode = mutableStateOf("ADD")
-
+    private var showDeleteSelectedReceiptsDialog =
+        mutableStateOf(false)
     private var manualShoppingItemInput =
         mutableStateOf("")
 
@@ -118,7 +122,11 @@ class MainActivity : ComponentActivity() {
     private var showClearReceiptsDialog =
         mutableStateOf(false)
 
+    private var receiptSelectionMode =
+        mutableStateOf(false)
 
+    private var selectedReceiptIds =
+        mutableStateOf(setOf<Int>())
         private val categories = listOf(
         "Pantry Dry Goods",
         "Canned Goods",
@@ -343,9 +351,58 @@ class MainActivity : ComponentActivity() {
                         }
                     if (existingReceipt == null) {
 
-                        database
-                            .receiptDao()
-                            .insertReceipt(receipt)
+                        val receiptId =
+                            database
+                                .receiptDao()
+                                .insertReceipt(receipt)
+
+                        val parsed =
+                            ReceiptParser.parse(text)
+
+                        if (parsed.structuredItems.isNotEmpty()) {
+
+                            val entities =
+                                parsed.structuredItems.map { item ->
+
+                                    ReceiptItemEntity(
+                                        receiptId = receiptId,
+                                        retailer = parsed.storeName,
+                                        receiptDate = parsed.receiptDate,
+                                        productName = item.name,
+                                        quantity = item.quantity,
+                                        unit = item.unit,
+                                        unitPrice = item.unitPrice,
+                                        totalPrice = item.totalPrice
+                                    )
+                                }
+
+                            database
+                                .receiptItemDao()
+                                .insertAll(entities)
+
+                            // Temporary verification
+                            val savedItems =
+                                database
+                                    .receiptItemDao()
+                                    .getItemsForReceipt(receiptId)
+
+                            android.util.Log.e(
+                                "ReceiptPersistence",
+                                "Receipt $receiptId saved ${savedItems.size} structured items"
+                            )
+
+                            savedItems.forEach { item ->
+
+                                android.util.Log.e(
+                                    "ReceiptPersistence",
+                                    "${item.productName} | " +
+                                            "qty=${item.quantity} | " +
+                                            "unit=${item.unit} | " +
+                                            "unitPrice=${item.unitPrice} | " +
+                                            "total=${item.totalPrice}"
+                                )
+                            }
+                        }
 
                         refreshReceipts()
 
@@ -890,6 +947,7 @@ class MainActivity : ComponentActivity() {
                 Text("Receipts")
             }
 
+
             Spacer(modifier = Modifier.height(12.dp))
 
             Button(
@@ -1417,17 +1475,62 @@ class MainActivity : ComponentActivity() {
         ) {
 
             Text(
-
                 text = "Receipts",
-
                 style = MaterialTheme.typography.headlineSmall
-
             )
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Start
+            ) {
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+
+                TextButton(
+                    onClick = {
+
+                        receiptSelectionMode.value =
+                            !receiptSelectionMode.value
+
+                        if (!receiptSelectionMode.value) {
+                            selectedReceiptIds.value = emptySet()
+                        }
+                    }
+                ) {
+
+                    Text(
+                        if (receiptSelectionMode.value)
+                            "Cancel selection"
+                        else
+                            "Select receipt"
+                    )
+                }
+            }
+            if (
+                receiptSelectionMode.value &&
+                selectedReceiptIds.value.isNotEmpty()
+            ) {
+
+                Button(
+                    onClick = {
+                        showDeleteSelectedReceiptsDialog.value = true
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+
+                    Text(
+                        "Delete Selected (${selectedReceiptIds.value.size})"
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+            }
+
             Spacer(
-
                 modifier = Modifier.height(16.dp)
-
             )
 
 
@@ -1463,8 +1566,43 @@ class MainActivity : ComponentActivity() {
                             receipt = receipt,
                             theme = theme,
                             expanded = expanded,
+
                             onExpandToggle = {
                                 expanded = !expanded
+                            },
+
+                            onDelete = {
+
+                                lifecycleScope.launch {
+
+                                    database
+                                        .receiptItemDao()
+                                        .deleteForReceipt(receipt.id.toLong())
+
+                                    database
+                                        .receiptDao()
+                                        .deleteReceiptById(receipt.id)
+
+                                    refreshReceipts()
+                                }
+                            },
+
+                            selectionMode = receiptSelectionMode.value,
+
+                            selected =
+                                selectedReceiptIds.value.contains(receipt.id),
+
+                            onSelectionChange = { checked ->
+
+                                selectedReceiptIds.value =
+                                    if (checked) {
+
+                                        selectedReceiptIds.value + receipt.id
+
+                                    } else {
+
+                                        selectedReceiptIds.value - receipt.id
+                                    }
                             }
                         )
                     }
@@ -1497,8 +1635,13 @@ class MainActivity : ComponentActivity() {
                         Button(
                             onClick = {
                                 lifecycleScope.launch {
+
+                                    database.receiptItemDao().deleteAll()
+
                                     database.receiptDao().deleteAllReceipts()
+
                                     refreshReceipts()
+
                                     showClearReceiptsDialog.value = false
                                 }
                             }
@@ -1558,6 +1701,64 @@ class MainActivity : ComponentActivity() {
 
             }
 
+        }
+        if (showDeleteSelectedReceiptsDialog.value) {
+
+            AlertDialog(
+                onDismissRequest = {
+                    showDeleteSelectedReceiptsDialog.value = false
+                },
+                title = {
+                    Text("Delete Selected Receipts")
+                },
+                text = {
+                    Text(
+                        "Delete ${selectedReceiptIds.value.size} selected receipt(s) " +
+                                "and their associated purchase history?"
+                    )
+                },
+                confirmButton = {
+
+                    Button(
+                        onClick = {
+
+                            lifecycleScope.launch {
+
+                                selectedReceiptIds.value.forEach { receiptId ->
+
+                                    database
+                                        .receiptItemDao()
+                                        .deleteForReceipt(receiptId.toLong())
+
+                                    database
+                                        .receiptDao()
+                                        .deleteReceiptById(receiptId)
+                                }
+
+                                selectedReceiptIds.value = emptySet()
+
+                                receiptSelectionMode.value = false
+
+                                refreshReceipts()
+
+                                showDeleteSelectedReceiptsDialog.value = false
+                            }
+                        }
+                    ) {
+                        Text("Delete")
+                    }
+                },
+                dismissButton = {
+
+                    Button(
+                        onClick = {
+                            showDeleteSelectedReceiptsDialog.value = false
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
 
     }
