@@ -85,4 +85,19 @@ interface ProductDao {
         barcode: String
     ): List<ProductEntity>
 
+    @Query("UPDATE products SET location = :location WHERE id = :id")
+    suspend fun updateLocationById(
+        id: Int,
+        location: String
+    )
+
+    @Query("""
+    SELECT *
+    FROM products
+    WHERE itemName = :itemName COLLATE NOCASE
+    LIMIT 1
+""")
+    suspend fun getProductByName(
+        itemName: String
+    ): ProductEntity?
 }

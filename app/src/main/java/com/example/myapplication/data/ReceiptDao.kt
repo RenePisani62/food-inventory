@@ -43,5 +43,14 @@ interface ReceiptDao {
     suspend fun deleteReceiptById(
         receiptId: Int
     )
+    @Query("""
+    SELECT *
+    FROM receipts
+    WHERE fingerprint = :fingerprint
+    LIMIT 1
+""")
+    suspend fun getReceiptByFingerprint(
+        fingerprint: String
+    ): ReceiptEntity?
 }
 

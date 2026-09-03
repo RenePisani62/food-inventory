@@ -39,12 +39,29 @@ fun ReceiptCard(
     selectionMode: Boolean,
     selected: Boolean,
     onSelectionChange: (Boolean) -> Unit
+) {
 
-)
-{
+    // ============================================================
+    // RECEIPT CARD - LOCAL UI STATE
+    // ============================================================
+
     val showDeleteDialog = remember {
         mutableStateOf(false)
     }
+
+    // ============================================================
+    // RECEIPT CARD - STRUCTURED PRODUCT DATA
+    // ============================================================
+
+    val parsed =
+        ReceiptParser.parse(receipt.rawText)
+
+    val structuredItemCount =
+        parsed.structuredItems.size
+
+    // ============================================================
+    // RECEIPT CARD - MAIN CARD
+    // ============================================================
 
     Card(
         colors = CardDefaults.cardColors(
@@ -58,6 +75,11 @@ fun ReceiptCard(
         Column(
             modifier = Modifier.padding(12.dp)
         ) {
+
+            // ====================================================
+            // RECEIPT CARD - SELECTION MODE
+            // ====================================================
+
             if (selectionMode) {
 
                 Row(
@@ -74,7 +96,11 @@ fun ReceiptCard(
                     )
 
                     Text(
-                        text = if (selected) "Selected" else "Select"
+                        text =
+                            if (selected)
+                                "Selected"
+                            else
+                                "Select"
                     )
                 }
 
@@ -83,30 +109,51 @@ fun ReceiptCard(
                 )
             }
 
+            // ====================================================
+            // RECEIPT CARD - RETAILER
+            // ====================================================
+
             Text(
                 text = theme.retailerName,
                 style = MaterialTheme.typography.headlineSmall,
                 color = theme.headerColor
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(
+                modifier = Modifier.height(8.dp)
+            )
+
+            // ====================================================
+            // RECEIPT CARD - DATE
+            // ====================================================
 
             Row(
                 verticalAlignment = Alignment.CenterVertically
             ) {
+
                 Text(
                     text = "📅",
                     color = theme.headerColor
                 )
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(
+                    modifier = Modifier.width(8.dp)
+                )
 
                 Text(
-                    text = receipt.receiptDate ?: "Unknown"
+                    text =
+                        receipt.receiptDate
+                            ?: "Unknown"
                 )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(
+                modifier = Modifier.height(8.dp)
+            )
+
+            // ====================================================
+            // RECEIPT CARD - ITEM COUNT AND TOTAL
+            // ====================================================
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -117,49 +164,54 @@ fun ReceiptCard(
                 Row(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(text = "🛒")
-
-                    Spacer(modifier = Modifier.width(6.dp))
 
                     Text(
-                        text = "Items: ${
-                            ReceiptParser.extractItemCount(receipt.rawText)
-                                ?: ReceiptParser.extractProducts(receipt.rawText).size
-                        }"
+                        text = "🛒"
+                    )
+
+                    Spacer(
+                        modifier = Modifier.width(6.dp)
+                    )
+
+                    Text(
+                        text = "Items: $structuredItemCount"
                     )
                 }
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+
                     Text(
                         text = "💰",
                         color = theme.headerColor
                     )
 
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(
+                        modifier = Modifier.width(6.dp)
+                    )
 
                     Text(
                         text =
                             receipt.totalAmount
-                                ?.let { "$%.2f".format(it) }
+                                ?.let {
+                                    "$%.2f".format(it)
+                                }
                                 ?: "-"
                     )
                 }
             }
 
+            // ====================================================
+            // RECEIPT CARD - EXPAND / COLLAPSE CONTROL
+            // ====================================================
+
             Text(
                 text =
                     if (expanded)
-                        "▲ Hide ${
-                            ReceiptParser.extractItemCount(receipt.rawText)
-                                ?: ReceiptParser.extractProducts(receipt.rawText).size
-                        } products"
+                        "▲ Hide $structuredItemCount products"
                     else
-                        "▼ ${
-                            ReceiptParser.extractItemCount(receipt.rawText)
-                                ?: ReceiptParser.extractProducts(receipt.rawText).size
-                        } products recognised",
+                        "▼ $structuredItemCount products recognised",
                 color = theme.headerColor,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
@@ -169,12 +221,16 @@ fun ReceiptCard(
                     .padding(top = 8.dp)
                     .align(Alignment.End)
             )
+
+            // ====================================================
+            // RECEIPT CARD - EXPANDED PRODUCT LIST
+            // ====================================================
+
             if (expanded) {
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                val parsed =
-                    ReceiptParser.parse(receipt.rawText)
+                Spacer(
+                    modifier = Modifier.height(12.dp)
+                )
 
                 if (parsed.structuredItems.isNotEmpty()) {
 
@@ -197,12 +253,14 @@ fun ReceiptCard(
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement =
+                                    Arrangement.SpaceBetween
                             ) {
 
                                 Text(
                                     text = item.displayDetails(),
-                                    style = MaterialTheme.typography.bodySmall
+                                    style =
+                                        MaterialTheme.typography.bodySmall
                                 )
 
                                 Text(
@@ -212,7 +270,8 @@ fun ReceiptCard(
                                                 "$%.2f".format(it)
                                             }
                                             ?: "",
-                                    style = MaterialTheme.typography.bodyMedium
+                                    style =
+                                        MaterialTheme.typography.bodyMedium
                                 )
                             }
                         }
@@ -220,27 +279,27 @@ fun ReceiptCard(
 
                 } else {
 
+                    // ============================================
+                    // RECEIPT CARD - LEGACY PRODUCT FALLBACK
+                    // ============================================
+
                     parsed.products.forEach { product ->
 
                         Text(
                             text = "• $product",
-                            style = MaterialTheme.typography.bodyMedium
+                            style =
+                                MaterialTheme.typography.bodyMedium
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(8.dp))
 
-                Text(
-                    text = "Delete receipt",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier
-                        .clickable {
-                            onDelete()
-                        }
-                        .align(Alignment.End)
+                Spacer(
+                    modifier = Modifier.height(8.dp)
                 )
-                Spacer(modifier = Modifier.height(8.dp))
+
+                // =================================================
+                // RECEIPT CARD - DELETE RECEIPT
+                // =================================================
 
                 Text(
                     text = "Delete receipt",
@@ -252,6 +311,11 @@ fun ReceiptCard(
                         }
                         .align(Alignment.End)
                 )
+
+                // =================================================
+                // RECEIPT CARD - DELETE CONFIRMATION
+                // =================================================
+
                 if (showDeleteDialog.value) {
 
                     AlertDialog(
@@ -259,24 +323,27 @@ fun ReceiptCard(
                             showDeleteDialog.value = false
                         },
                         title = {
-                            Text("Delete Receipt")
+                            Text(
+                                text = "Delete Receipt"
+                            )
                         },
                         text = {
                             Text(
-                                "Delete this receipt and its associated purchase history?"
+                                text =
+                                    "Delete this receipt and its associated purchase history?"
                             )
                         },
                         confirmButton = {
 
                             Button(
                                 onClick = {
-
                                     showDeleteDialog.value = false
-
                                     onDelete()
                                 }
                             ) {
-                                Text("Delete")
+                                Text(
+                                    text = "Delete"
+                                )
                             }
                         },
                         dismissButton = {
@@ -286,13 +353,15 @@ fun ReceiptCard(
                                     showDeleteDialog.value = false
                                 }
                             ) {
-                                Text("Cancel")
+                                Text(
+                                    text = "Cancel"
+                                )
                             }
                         }
                     )
                 }
             }
-            }
         }
     }
+}
 

@@ -4,6 +4,9 @@ object ReceiptParser {
 
     fun parse(rawText: String): ParsedReceipt {
 
+        // ============================================================
+        // RECEIPT PARSER - RETAILER-SPECIFIC STRUCTURED ITEM EXTRACTION
+        // ============================================================
         val retailer =
             RetailerDetector.detect(rawText)
 
@@ -13,10 +16,34 @@ object ReceiptParser {
                 Retailer.WOOLWORTHS ->
                     WoolworthsReceiptParser.extractStructuredItems(rawText)
 
+                Retailer.COLES ->
+                    ColesReceiptParser.extractStructuredItems(rawText)
+
                 else ->
                     emptyList()
             }
         structuredItems.forEachIndexed { index, item ->
+
+            if (retailer == Retailer.COLES) {
+
+                extractProducts(rawText).forEach { product ->
+
+                    val found =
+                        structuredItems.any { structured ->
+                            structured.name.equals(
+                                product,
+                                ignoreCase = true
+                            )
+                        }
+
+                    if (!found) {
+                        android.util.Log.e(
+                            "ColesParserCompare",
+                            "MISSING: $product"
+                        )
+                    }
+                }
+            }
 
             android.util.Log.e(
                 "StructuredReceipt",

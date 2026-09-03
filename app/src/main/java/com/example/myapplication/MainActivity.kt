@@ -66,13 +66,22 @@ import com.example.myapplication.data.ReceiptEntity
 import com.example.myapplication.data.ReceiptParser
 import com.example.myapplication.data.RetailerThemeResolver
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Icon
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.material3.Icon
 import androidx.compose.ui.Alignment
 import com.example.myapplication.data.ReceiptItemEntity
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.IconButton
+import com.example.myapplication.data.HouseholdCategoryResolver
+import com.example.myapplication.data.HouseholdCategory
+import com.example.myapplication.ui.theme.MyApplicationTheme
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.example.myapplication.data.ProductPreferenceKeyResolver
+import com.example.myapplication.data.ProductLocationPreferenceEntity
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 
 
 class MainActivity : ComponentActivity() {
@@ -97,6 +106,8 @@ class MainActivity : ComponentActivity() {
         mutableStateOf<List<ReceiptItemEntity>>(emptyList())
     private var pendingUnknownAmount =
         mutableStateOf(1)
+    private var priceHistoryHasSearched =
+        mutableStateOf(false)
 
     private var checkedShoppingItems =
         mutableStateOf<Set<String>>(emptySet())
@@ -129,9 +140,11 @@ class MainActivity : ComponentActivity() {
     private var receiptSelectionMode =
         mutableStateOf(false)
 
+    private val lastImportedReceiptId = mutableLongStateOf(0L)
+    private val showImportReview = mutableStateOf(false)
     private var selectedReceiptIds =
         mutableStateOf(setOf<Int>())
-        private val categories = listOf(
+    private val categories = listOf(
         "Pantry Dry Goods",
         "Canned Goods",
         "Refrigerated: Fresh",
@@ -257,9 +270,17 @@ class MainActivity : ComponentActivity() {
 
                     if (productToReduce.quantity <= amount) {
 
+                        // Product is now out of stock.
+                        // Keep the product record for shopping-list/history purposes,
+                        // but there is no physical stock left to expire.
                         dao.updateQuantityById(
                             productToReduce.id,
                             0
+                        )
+
+                        dao.updateExpiryDateById(
+                            productToReduce.id,
+                            null
                         )
 
                     } else {
@@ -297,6 +318,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
     private val barcodeLauncher =
         registerForActivityResult(ScanContract()) { result ->
 
@@ -308,70 +330,80 @@ class MainActivity : ComponentActivity() {
 
     private val importReceiptLauncher =
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-
             if (uri != null) {
-
                 lifecycleScope.launch {
+                    try {
+                        val text = readPdfText(uri)
 
-                    val text = readPdfText(uri)
-                    val parsedReceipt =
-
-                        ReceiptParser.parse(text)
-
-                    val receipt =
-
-                        ReceiptEntity(
-                            storeName =
-                                parsedReceipt.storeName,
-
-                            receiptDate =
-                                parsedReceipt.receiptDate,
-
-                            totalAmount =
-                                parsedReceipt.totalAmount,
-
-                            receiptNumber =
-                                parsedReceipt.receiptNumber,
-
-                            rawText = text
-                        )
-                    val products =
-
-                        ReceiptParser.extractProducts(text)
-
-                    products.forEach {
-
-                        android.util.Log.d("ReceiptProducts", it)
-
-                    }
-                    val existingReceipt =
-
-                        receipt.receiptNumber?.let {
-
-                            database
-                                .receiptDao()
-                                .getReceiptByNumber(it)
-
+                        if (text.isBlank()) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "No readable text was found in this receipt.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            return@launch
                         }
-                    if (existingReceipt == null) {
+
+                        val parsedReceipt = ReceiptParser.parse(text)
+                        val fingerprint = generateReceiptFingerprint(text)
+
+                        // Primary duplicate protection: the normalized PDF text fingerprint.
+                        val receiptWithSameFingerprint =
+                            database.receiptDao().getReceiptByFingerprint(fingerprint)
+
+                        if (receiptWithSameFingerprint != null) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "This receipt has already been imported.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            return@launch
+                        }
+
+                        // Secondary duplicate protection where the retailer supplied a receipt number.
+                        val receiptWithSameNumber =
+                            parsedReceipt.receiptNumber?.let { receiptNumber ->
+                                if (receiptNumber.isBlank()) {
+                                    null
+                                } else {
+                                    database.receiptDao().getReceiptByNumber(receiptNumber)
+                                }
+                            }
+
+                        if (receiptWithSameNumber != null) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Receipt already imported.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            return@launch
+                        }
+                        // ============================================================
+                        // RECEIPT IMPORT - SAVE RECEIPT AND ITEMS
+                        // ============================================================
+
+                        val receipt =
+                            ReceiptEntity(
+                                storeName = parsedReceipt.storeName,
+                                receiptDate = parsedReceipt.receiptDate,
+                                totalAmount = parsedReceipt.totalAmount,
+                                rawText = text,
+                                receiptNumber = parsedReceipt.receiptNumber,
+                                fingerprint = fingerprint
+                            )
 
                         val receiptId =
-                            database
-                                .receiptDao()
-                                .insertReceipt(receipt)
+                            database.receiptDao().insertReceipt(receipt)
 
-                        val parsed =
-                            ReceiptParser.parse(text)
+                        lastImportedReceiptId.longValue = receiptId
 
-                        if (parsed.structuredItems.isNotEmpty()) {
-
+                        if (parsedReceipt.structuredItems.isNotEmpty()) {
                             val entities =
-                                parsed.structuredItems.map { item ->
-
+                                parsedReceipt.structuredItems.map { item ->
                                     ReceiptItemEntity(
                                         receiptId = receiptId,
-                                        retailer = parsed.storeName,
-                                        receiptDate = parsed.receiptDate,
+                                        retailer = parsedReceipt.storeName,
+                                        receiptDate = parsedReceipt.receiptDate,
                                         productName = item.name,
                                         quantity = item.quantity,
                                         unit = item.unit,
@@ -379,42 +411,92 @@ class MainActivity : ComponentActivity() {
                                         totalPrice = item.totalPrice
                                     )
                                 }
-                            database
-                                .receiptItemDao()
-                                .insertAll(entities)
+
+                            database.receiptItemDao().insertAll(entities)
+
+                            android.util.Log.e(
+                                "HouseholdCategoryDebug",
+                                "IMPORT TEST: retailer=${parsedReceipt.storeName}, " +
+                                        "products=${parsedReceipt.products.size}, " +
+                                        "structuredItems=${parsedReceipt.structuredItems.size}"
+                            )
+
+                            // ============================================================
+                            // RECEIPT IMPORT - UPDATE INVENTORY
+                            // ============================================================
+                            parsedReceipt.structuredItems.forEach { item ->
+
+
+                                val householdCategory =
+                                    HouseholdCategoryResolver.resolve(item.name)
+
+                                // Temporary Logging
+                                android.util.Log.e(
+                                    "HouseholdCategoryDebug",
+                                    "COLES TEST: ${item.name} -> $householdCategory"
+                                )
+
+                                if (householdCategory == HouseholdCategory.FOOD) {
+
+                                    val inventoryQuantity =
+                                        when {
+                                            item.unit == "kg" ->
+                                                1
+
+                                            item.quantity != null ->
+                                                item.quantity
+                                                    .toInt()
+                                                    .coerceAtLeast(1)
+
+                                            else ->
+                                                1
+                                        }
+
+                                    val purchaseDate =
+                                        parsedReceipt.receiptDate
+                                            ?.let { dateText ->
+
+                                                runCatching {
+                                                    LocalDate.parse(
+                                                        dateText,
+                                                        java.time.format.DateTimeFormatter
+                                                            .ofPattern("d MMM yyyy")
+                                                    )
+                                                }.getOrNull()
+                                            }
+
+                                    addOrUpdateInventoryItem(
+                                        productName = item.name,
+                                        quantity = inventoryQuantity,
+                                        barcode = "",
+                                        purchaseDate = purchaseDate
+                                    )
+                                }
+                            }
+                            showImportReview.value = true
                         }
 
+                        refreshProducts()
+                        expirySummary.value = getExpirySummary()
                         refreshReceipts()
 
                         Toast.makeText(
                             this@MainActivity,
-                            "Receipt saved (${text.length} characters)",
+                            "Receipt imported successfully.",
                             Toast.LENGTH_LONG
                         ).show()
-
-                    } else {
-
+                    } catch (e: Exception) {
+                        Log.e("PantryPalReceipt", "Receipt import failed", e)
                         Toast.makeText(
                             this@MainActivity,
-                            "Receipt already imported",
+                            "Receipt import failed: ${e.message ?: "Unknown error"}",
                             Toast.LENGTH_LONG
                         ).show()
                     }
-
-                    Toast.makeText(
-
-                        this@MainActivity,
-
-                        "Receipt saved (${text.length} characters)",
-
-                        Toast.LENGTH_LONG
-
-                    ).show()
-
                 }
-
             }
         }
+
     private val importCsvLauncher =
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
 
@@ -480,6 +562,117 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    @Composable
+    private fun ImportReviewScreen() {
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+        ) {
+
+            Text(
+                text = "Review Imported Items",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(8.dp)
+            )
+
+            Text(
+                text = "Check the storage locations PantryPal assigned.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
+
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+
+                items(
+                    importedItemsForReview.value
+                ) { receiptItem ->
+
+                    val householdCategory =
+                        HouseholdCategoryResolver.resolve(
+                            receiptItem.productName
+                        )
+
+                    if (
+                        householdCategory ==
+                        HouseholdCategory.FOOD
+                    ) {
+
+                        val knowledge =
+                            ProductKnowledgeResolver.resolve(
+                                receiptItem.productName
+                            )
+
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color =
+                                MaterialTheme
+                                    .colorScheme
+                                    .surfaceVariant
+                        ) {
+
+                            Column(
+                                modifier = Modifier.padding(14.dp)
+                            ) {
+
+                                Text(
+                                    text = receiptItem.productName,
+                                    style =
+                                        MaterialTheme
+                                            .typography
+                                            .titleSmall,
+                                    fontWeight =
+                                        FontWeight.SemiBold
+                                )
+
+                                Spacer(
+                                    modifier = Modifier.height(4.dp)
+                                )
+
+                                Text(
+                                    text =
+                                        "Location: " +
+                                                knowledge.storageLocation,
+                                    style =
+                                        MaterialTheme
+                                            .typography
+                                            .bodyMedium
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            Button(
+                onClick = {
+                    currentScreen.value = "HOME"
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Done")
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -508,6 +701,16 @@ class MainActivity : ComponentActivity() {
 
         database = AppDatabase.getDatabase(this)
         refreshProducts()
+
+        // Temporary block
+        lifecycleScope.launch {
+
+            saveTestLocationPreference(
+                productName = "GOUDA CHEESE SLICES 200GRAM",
+                location = "Pantry"
+            )
+        }
+        // To here
         lifecycleScope.launch {
 
             val shoppingItems =
@@ -523,40 +726,124 @@ class MainActivity : ComponentActivity() {
             expirySummary.value = getExpirySummary()
 
             setContent {
-                MaterialTheme {
-                    Surface(modifier = Modifier.fillMaxSize()) {
+
+                MyApplicationTheme {
+
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+
                         when (currentScreen.value) {
 
-                            "HOME" -> HomeScreen()
+                            "HOME" ->
+                                HomeScreen()
 
-                            "INVENTORY" -> InventoryScreen()
+                            "INVENTORY" ->
+                                InventoryScreen()
 
-                            "DETAIL" -> ProductDetailScreen()
+                            "DETAIL" ->
+                                ProductDetailScreen()
 
-                            "SHOPPING" -> ShoppingListScreen()
+                            "SHOPPING" ->
+                                ShoppingListScreen()
 
-                            "PRICE_HISTORY" -> PriceHistoryScreen()
+                            "PRICE_HISTORY" ->
+                                PriceHistoryScreen()
 
-                            "RECEIPTS" -> {
-
+                            "RECEIPTS" ->
                                 ReceiptScreen()
 
+                            "IMPORT_REVIEW" ->
+                                ImportReviewScreen()
+
+                            else ->
+                                HomeScreen()
+                        }
+                    }
+
+                    if (showImportReview.value) {
+
+                        AlertDialog(
+                            onDismissRequest = {
+                                showImportReview.value = false
+                            },
+
+                            title = {
+                                Text("Receipt imported")
+                            },
+
+                            text = {
+
+                                Column {
+
+                                    Text(
+                                        "PantryPal has updated your inventory " +
+                                                "and automatically assigned storage locations."
+                                    )
+
+                                    Spacer(
+                                        modifier = Modifier.height(8.dp)
+                                    )
+
+                                    Text(
+                                        "You can review the imported items and " +
+                                                "correct any locations that need changing."
+                                    )
+                                }
+                            },
+
+                            confirmButton = {
+
+                                Button(
+                                    onClick = {
+
+                                        lifecycleScope.launch {
+
+                                            importedItemsForReview.value =
+                                                database
+                                                    .receiptItemDao()
+                                                    .getItemsForReceipt(
+                                                        lastImportedReceiptId.longValue
+                                                    )
+
+                                            showImportReview.value = false
+                                            currentScreen.value = "IMPORT_REVIEW"
+                                        }
+                                    }
+                                ) {
+                                    Text("Review locations")
+                                }
+
+                            },
+
+                            dismissButton = {
+
+                                TextButton(
+                                    onClick = {
+                                        showImportReview.value = false
+                                    }
+                                ) {
+                                    Text("Done")
+                                }
                             }
 
-                            else -> HomeScreen()
-                        }
+                        )
                     }
                 }
             }
-
         }
     }
 
 
-    @Composable
-    private fun HomeScreen() {
-        val barcodeFocusRequester = remember { FocusRequester() }
-        val keyboardController = LocalSoftwareKeyboardController.current
+        @Composable
+        private fun HomeScreen() {
+            val barcodeFocusRequester = remember { FocusRequester() }
+            val keyboardController = LocalSoftwareKeyboardController.current
+
+        var quickAddExpanded by remember {
+            mutableStateOf(false)
+        }
         LaunchedEffect(Unit) {
             barcodeFocusRequester.requestFocus()
 
@@ -575,19 +862,253 @@ class MainActivity : ComponentActivity() {
                 .padding(16.dp)
                 .padding(bottom = 80.dp)
         ) {
+            // PantryPal header
+
             Text(
                 text = "PantryPal",
-                style = MaterialTheme.typography.headlineMedium
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
             )
-            Spacer(modifier = Modifier.height(12.dp))
+
+            Spacer(modifier = Modifier.height(4.dp))
+
             Text(
-                text = if (mode.value == "ADD") {
-                    "Current Mode: ADD ITEMS"
-                } else {
-                    "Current Mode: DELETE ITEMS"
-                },
-                style = MaterialTheme.typography.titleMedium
+                text = "Your household, organised",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Primary receipt workflow
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        importReceiptLauncher.launch("application/pdf")
+                    },
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.primary
+            ) {
+
+                Column(
+                    modifier = Modifier.padding(20.dp)
+                ) {
+
+                    Text(
+                        text = "Import Receipt",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Text(
+                        text = "Let PantryPal update your household automatically",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Text(
+                text = "Household",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+// Inventory summary
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        refreshProducts()
+                        currentScreen.value = "INVENTORY"
+                    },
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+
+                    Column(
+                        modifier = Modifier.weight(1f)
+                    ) {
+
+                        Text(
+                            text = "Inventory",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Text(
+                            text =
+                                "${products.count { it.quantity > 0 }} items in stock",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        if (expirySummary.value.first > 0 ||
+                            expirySummary.value.second > 0
+                        ) {
+
+                            Spacer(modifier = Modifier.height(2.dp))
+
+                            Text(
+                                text = buildString {
+
+                                    if (expirySummary.value.first > 0) {
+                                        append(
+                                            "${expirySummary.value.first} expiring soon"
+                                        )
+                                    }
+
+                                    if (
+                                        expirySummary.value.first > 0 &&
+                                        expirySummary.value.second > 0
+                                    ) {
+                                        append("  •  ")
+                                    }
+
+                                    if (expirySummary.value.second > 0) {
+                                        append(
+                                            "${expirySummary.value.second} expired"
+                                        )
+                                    }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "View ›",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+// Shopping and receipts
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+
+                OutlinedButton(
+                    onClick = {
+
+                        lifecycleScope.launch {
+
+                            refreshShoppingList()
+
+                            currentScreen.value = "SHOPPING"
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Shopping List")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        currentScreen.value = "RECEIPTS"
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Receipts")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "Quick Add/ Remove",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        quickAddExpanded = !quickAddExpanded
+                    },
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            horizontal = 16.dp,
+                            vertical = 16.dp
+                        ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+
+                    Column(
+                        modifier = Modifier.weight(1f)
+                    ) {
+
+                        Text(
+                            text = "Scan or enter an item",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+
+                        Text(
+                            text = "Barcode or manual entry",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Text(
+                        text =
+                            if (quickAddExpanded) {
+                                "⌃"
+                            } else {
+                                "›"
+                            },
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (quickAddExpanded) {
+
+                // Existing Quick Add controls will go inside here.
+
+            }
+
+
             if (pendingUnknownBarcode.value != null) {
                 AlertDialog(
                     onDismissRequest = {
@@ -702,199 +1223,166 @@ class MainActivity : ComponentActivity() {
                     }
                 )
             }
+            if (quickAddExpanded) {
 
-            val (soon, expired) = expirySummary.value
+                val (soon, expired) = expirySummary.value
 
-            if (soon > 0 || expired > 0) {
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Text(
-                    text = buildString {
-                        if (soon > 0) append("⚠️ $soon expiring soon  ")
-                        if (expired > 0) append("❌ $expired expired")
-                    },
-                    color = Color.Red
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant
                 ) {
-                    // Spacer(modifier = Modifier.width(8.dp))
-                }
-                //  Spacer(modifier = Modifier.height(12.dp))
-            }
-            Text("Quick Scan Mode")
-            Switch(
-                checked = quickScanMode.value,
-                onCheckedChange = {
-                    quickScanMode.value = it
-                },
-                modifier = Modifier.focusable(false)
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            var expanded by remember { mutableStateOf(false) }
-            // Spacer(modifier = Modifier.height(16.dp))
-            Text("Bluetooth / Manual Barcode Input")
-            // Spacer(modifier = Modifier.height(2.dp))
-            OutlinedTextField(
-                value = manualBarcodeInput.value,
-                onValueChange = {
-                    manualBarcodeInput.value = it
-                },
-                label = {
-                    Text("Barcode")
-                },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(
-                    imeAction = ImeAction.Done
-                ),
 
-                keyboardActions = KeyboardActions(
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                horizontal = 16.dp,
+                                vertical = 10.dp
+                            )
+                    ) {
 
-                    onDone = {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
 
-                        val barcode =
-                            manualBarcodeInput.value.trim()
+                            Text(
+                                text =
+                                    if (mode.value == "ADD") {
+                                        "Add mode"
+                                    } else {
+                                        "Remove mode"
+                                    },
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color =
+                                    if (mode.value == "ADD") {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    },
+                                modifier = Modifier.weight(1f)
+                            )
 
-                        if (barcode.isNotBlank()) {
+                            Switch(
+                                checked = mode.value == "DELETE",
+                                onCheckedChange = { removeMode ->
+                                    mode.value =
+                                        if (removeMode) {
+                                            "DELETE"
+                                        } else {
+                                            "ADD"
+                                        }
+                                }
+                            )
+                        }
 
-                            processBarcode(barcode)
+                        Spacer(modifier = Modifier.height(6.dp))
 
-                            manualBarcodeInput.value = ""
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+
+                            Text(
+                                text = "Quick Scan",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+
+                            Switch(
+                                checked = quickScanMode.value,
+                                onCheckedChange = {
+                                    quickScanMode.value = it
+                                },
+                                modifier = Modifier.focusable(false)
+                            )
                         }
                     }
-                ),
+                }
 
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .focusRequester(barcodeFocusRequester)
-            )
+                Spacer(
+                    modifier = Modifier.height(20.dp)
+                )
 
-            Spacer(modifier = Modifier.height(8.dp))
+                var expanded by remember {
+                    mutableStateOf(false)
+                }
 
-            Button(
-                onClick = {
+                Text(
+                    text = "Scan or enter barcode",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
 
-                    val barcode =
-                        manualBarcodeInput.value.trim()
+                Spacer(modifier = Modifier.height(6.dp))
 
-                    if (barcode.isNotBlank()) {
+                OutlinedTextField(
+                    value = manualBarcodeInput.value,
+                    onValueChange = {
+                        manualBarcodeInput.value = it
+                    },
+                    label = {
+                        Text("Barcode")
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
 
-                        processBarcode(barcode)
+                            val barcode =
+                                manualBarcodeInput.value.trim()
 
-                        manualBarcodeInput.value = ""
-                        barcodeFocusRequester.requestFocus()
-                    }
-                },
+                            if (barcode.isNotBlank()) {
 
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Process Barcode")
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-            Box {
+                                processBarcode(barcode)
+
+                                manualBarcodeInput.value = ""
+                            }
+                        }
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(barcodeFocusRequester)
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Text(
+                    text = "Quantity",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                OutlinedTextField(
+                    value = quantityInput.value,
+                    onValueChange = {
+                        quantityInput.value = it
+                        saveIntakeDefaults()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 Button(
                     onClick = {
-                        expanded = true
+                        cameraPermissionLauncher.launch(
+                            android.Manifest.permission.CAMERA
+                        )
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(selectedCategory.value)
-                }
-
-                DropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = {
-                        expanded = false
-                    }
-                ) {
-
-                    categories.forEach { category ->
-
-                        DropdownMenuItem(
-                            text = {
-                                Text(category)
-                            },
-
-                            onClick = {
-
-                                selectedCategory.value = category
-
-                                applySuggestedExpiryDate()
-                                saveIntakeDefaults()
-                                applySuggestedLocation()
-                                saveIntakeDefaults()
-
-                                expanded = false
-                            }
-                        )
-                    }
+                    Text("Scan")
                 }
             }
-            Text("Quantity:")
-
-            TextField(
-                value = quantityInput.value,
-                onValueChange = {
-                    quantityInput.value = it
-                    saveIntakeDefaults()
-                },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Text("Expiry Date:")
-
-            Button(
-                onClick = {
-                    showExpiryDatePicker()
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    if (expiryInput.value.isBlank()) {
-                        "Select expiry date"
-                    } else {
-                        expiryInput.value
-                    }
-                )
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Button(
-                    onClick = {
-                        mode.value = "ADD"
-                        cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
-                    },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Add / Scan")
-                }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Button(
-                    onClick = {
-                        mode.value = "DELETE"
-                        cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
-                    },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Delete / Scan")
-                }
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Spacer(modifier = Modifier.height(12.dp))
-            // Spacer(modifier = Modifier.height(12.dp))
-
             Button(
                 onClick = {
 
@@ -1021,16 +1509,24 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun InventoryScreen() {
         val filteredProducts = products.filter { product ->
-            product.itemName.contains(searchText.value, ignoreCase = true) ||
-                    product.barcode.contains(searchText.value, ignoreCase = true)
+
+            product.itemName.contains(
+                searchText.value,
+                ignoreCase = true
+            ) ||
+                    product.barcode.contains(
+                        searchText.value,
+                        ignoreCase = true
+                    )
         }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(16.dp)
-                .verticalScroll(rememberScrollState())
                 .padding(bottom = 80.dp)
         ) {
+
             Text(
                 text = "Inventory",
                 style = MaterialTheme.typography.headlineMedium
@@ -1040,28 +1536,38 @@ class MainActivity : ComponentActivity() {
 
             TextField(
                 value = searchText.value,
-                onValueChange = { searchText.value = it },
+                onValueChange = {
+                    searchText.value = it
+                },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 placeholder = {
                     Text("Search food or barcode")
+                },
+                trailingIcon = {
+
+                    if (searchText.value.isNotBlank()) {
+
+                        IconButton(
+                            onClick = {
+                                searchText.value = ""
+                            }
+                        ) {
+                            Text(
+                                text = "×",
+                                style = MaterialTheme.typography.headlineSmall
+                            )
+                        }
+                    }
                 }
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Button(
-                onClick = {
-                    currentScreen.value = "PRICE_HISTORY"
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Price History")
-            }
-
-            Spacer(
-                modifier = Modifier.height(12.dp)
+            Text(
+                text = "Matches: ${filteredProducts.size}",
+                style = MaterialTheme.typography.bodySmall
             )
+
+            Spacer(modifier = Modifier.height(12.dp))
             Button(
                 onClick = {
                     currentScreen.value = "HOME"
@@ -1074,17 +1580,24 @@ class MainActivity : ComponentActivity() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            LazyColumn {
+            LazyColumn(
+                modifier = Modifier.weight(1f)
+            ) {
                 items(filteredProducts) { product ->
-                    val expiryText = "[${product.expiryDate ?: "Not set"}]"
 
+                    val expiryText =
+                        "[${product.expiryDate ?: "Not set"}]"
 
                     Text(
-                        text = "${product.itemName} | Location: ${product.location} | Barcode: ${product.barcode} | Qty: ${product.quantity} | Expiry: $expiryText | ${
-                            expiryStatus(
-                                product.expiryDate
-                            )
-                        }",
+                        text = "${product.itemName} | " +
+                                "Location: ${product.location} | " +
+                                "Barcode: ${product.barcode} | " +
+                                "Qty: ${product.quantity} | " +
+                                "Expiry: $expiryText | ${
+                                    expiryStatus(
+                                        product.expiryDate
+                                    )
+                                }",
                         modifier = Modifier
                             .padding(8.dp)
                             .fillMaxWidth()
@@ -1816,6 +2329,7 @@ class MainActivity : ComponentActivity() {
                             database
                                 .receiptItemDao()
                                 .getPriceHistory(searchTerm)
+                        priceHistoryHasSearched.value = true
 
                     }
                 },
@@ -1872,7 +2386,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-            } else if (priceHistorySearch.value.isNotBlank()) {
+            } else if (priceHistoryHasSearched.value) {
 
                 Text(
                     text = "No price history found."
@@ -1939,6 +2453,8 @@ class MainActivity : ComponentActivity() {
         "Fruit" to 7,
         "Other" to 14
     )
+    private val importedItemsForReview =
+        mutableStateOf<List<ReceiptItemEntity>>(emptyList())
     private val categoryDefaultLocations = mapOf(
         "Pantry Dry Goods" to "Pantry",
         "Canned Goods" to "Pantry",
@@ -1984,7 +2500,136 @@ class MainActivity : ComponentActivity() {
         selectedLocation.value =
             categoryDefaultLocations[selectedCategory.value] ?: "Pantry"
     }
-    private fun refreshProducts() {
+
+    private suspend fun resolveStorageLocation(
+        productName: String
+    ): String {
+
+        val productKey =
+            ProductPreferenceKeyResolver.resolve(productName)
+
+        val learnedPreference =
+            database
+                .productLocationPreferenceDao()
+                .getPreference(productKey)
+
+        android.util.Log.e(
+            "LocationPreferenceDebug",
+            "name='$productName' | " +
+                    "key='$productKey' | " +
+                    "learned=${learnedPreference?.location}"
+        )
+
+        if (learnedPreference != null) {
+            return learnedPreference.location
+        }
+
+        val defaultLocation =
+            ProductKnowledgeResolver
+                .resolve(productName)
+                .storageLocation
+
+        android.util.Log.e(
+            "LocationPreferenceDebug",
+            "Using default location=$defaultLocation"
+        )
+
+        return defaultLocation
+    }
+    private suspend fun addOrUpdateInventoryItem(
+        productName: String,
+        quantity: Int = 1,
+        barcode: String = "",
+        purchaseDate: LocalDate? = null,
+        explicitExpiry: String? = null
+    ) {
+
+        val dao =
+            database.productDao()
+
+        val knowledge =
+            ProductKnowledgeResolver.resolve(productName)
+
+        val resolvedLocation =
+            resolveStorageLocation(productName)
+
+        val baseDate =
+            purchaseDate ?: LocalDate.now()
+
+        val resolvedExpiry =
+            explicitExpiry
+                ?: baseDate
+                    .plusDays(
+                        knowledge.suggestedShelfLifeDays.toLong()
+                    )
+                    .toString()
+
+        val existing =
+            if (barcode.isNotBlank()) {
+
+                dao.getProductByBarcodeAndExpiry(
+                    barcode,
+                    resolvedExpiry
+                )
+
+            } else {
+
+                dao.getProductByName(productName)
+            }
+
+        if (existing != null) {
+
+            dao.updateQuantityById(
+                existing.id,
+                existing.quantity + quantity
+
+            )
+            database
+                .productDao()
+                .updateLocationById(
+                    existing.id,
+                    resolvedLocation
+                )
+
+        } else {
+
+            val newProduct =
+                ProductEntity(
+                    barcode = barcode,
+                    itemName = productName,
+                    quantity = quantity,
+                    lastScanned = System.currentTimeMillis(),
+                    expiryDate = resolvedExpiry,
+                    location = resolvedLocation
+                )
+
+            dao.insertProduct(newProduct)
+        }
+    }
+    private fun generateReceiptFingerprint(
+        rawText: String
+    ): String {
+
+        val normalizedText =
+            rawText
+                .trim()
+                .replace(Regex("\\s+"), " ")
+                .lowercase()
+
+        val digest =
+            java.security.MessageDigest
+                .getInstance("SHA-256")
+                .digest(
+                    normalizedText.toByteArray(
+                        Charsets.UTF_8
+                    )
+                )
+
+        return digest.joinToString("") { byte ->
+            "%02x".format(byte)
+        }
+    }
+            private fun refreshProducts() {
         lifecycleScope.launch {
             products.clear()
             products.addAll(database.productDao().getAllProductsAlphabetical())
@@ -2076,6 +2721,28 @@ class MainActivity : ComponentActivity() {
             database.receiptDao()
                 .getAllReceipts()
     }
+
+    // Temporary block
+    private suspend fun saveTestLocationPreference(
+        productName: String,
+        location: String
+    ) {
+
+        val productKey =
+            ProductPreferenceKeyResolver.resolve(productName)
+
+        database
+            .productLocationPreferenceDao()
+            .savePreference(
+                ProductLocationPreferenceEntity(
+                    productKey = productKey,
+                    originalName = productName,
+                    location = location,
+                    lastUpdated = System.currentTimeMillis()
+                )
+            )
+    }
+    // To here
     private suspend fun refreshShoppingList() {
 
         val generatedItems = generateShoppingList()

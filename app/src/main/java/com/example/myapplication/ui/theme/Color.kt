@@ -2,10 +2,24 @@ package com.example.myapplication.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val Purple80 = Color(0xFFD0BCFF)
-val PurpleGrey80 = Color(0xFFCCC2DC)
-val Pink80 = Color(0xFFEFB8C8)
+// PantryPal brand colours
+val PantryGreen = Color(0xFF4F772D)
+val PantryGreenDark = Color(0xFF31572C)
+val PantryGreenLight = Color(0xFF90A955)
 
-val Purple40 = Color(0xFF6650a4)
-val PurpleGrey40 = Color(0xFF625b71)
-val Pink40 = Color(0xFF7D5260)
+// Background / surfaces
+val PantryCream = Color(0xFFFFFBF2)
+val PantrySurface = Color(0xFFF4F7EE)
+val PantrySurfaceGreen = Color(0xFFEAF2E3)
+
+// Text
+val PantryTextDark = Color(0xFF26351F)
+val PantryTextSecondary = Color(0xFF66715E)
+
+// Status colours
+val PantryAmber = Color(0xFFE9A23B)
+val PantryRed = Color(0xFFB84A4A)
+
+// Neutral
+val PantryOutline = Color(0xFFCBD5C0)
+val PantryWhite = Color(0xFFFFFFFF)

@@ -19,5 +19,7 @@ data class ReceiptEntity(
 
     val receiptNumber: String?,
 
+    val fingerprint: String? = null,
+
     val createdAt: Long = System.currentTimeMillis()
 )
