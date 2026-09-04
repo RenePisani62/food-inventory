@@ -562,6 +562,14 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    // ============================================================
+// IMPORT REVIEW - REVIEW IMPORTED PRODUCT LOCATIONS
+// ============================================================
+
+    // ============================================================
+// IMPORT REVIEW - REVIEW IMPORTED PRODUCT LOCATIONS
+// ============================================================
+
     @Composable
     private fun ImportReviewScreen() {
 
@@ -599,63 +607,190 @@ class MainActivity : ComponentActivity() {
 
                 items(
                     importedItemsForReview.value
-                ) { receiptItem ->
+                ) { reviewItem ->
 
-                    val householdCategory =
-                        HouseholdCategoryResolver.resolve(
-                            receiptItem.productName
-                        )
-
-                    if (
-                        householdCategory ==
-                        HouseholdCategory.FOOD
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        color =
+                            MaterialTheme
+                                .colorScheme
+                                .surfaceVariant
                     ) {
 
-                        val knowledge =
-                            ProductKnowledgeResolver.resolve(
-                                receiptItem.productName
-                            )
-
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            color =
-                                MaterialTheme
-                                    .colorScheme
-                                    .surfaceVariant
+                        Column(
+                            modifier = Modifier.padding(14.dp)
                         ) {
 
-                            Column(
-                                modifier = Modifier.padding(14.dp)
+                            Text(
+                                text = reviewItem.productName,
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .titleSmall,
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
+
+                            Spacer(
+                                modifier = Modifier.height(4.dp)
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement =
+                                    Arrangement.SpaceBetween,
+                                verticalAlignment =
+                                    Alignment.CenterVertically
                             ) {
 
                                 Text(
-                                    text = receiptItem.productName,
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .titleSmall,
-                                    fontWeight =
-                                        FontWeight.SemiBold
-                                )
-
-                                Spacer(
-                                    modifier = Modifier.height(4.dp)
-                                )
-
-                                Text(
                                     text =
-                                        "Location: " +
-                                                knowledge.storageLocation,
+                                        "Location: ${reviewItem.location}",
                                     style =
                                         MaterialTheme
                                             .typography
                                             .bodyMedium
                                 )
+
+                                TextButton(
+                                    onClick = {
+                                        locationEditItem.value = reviewItem
+                                        locationEditSelection.value = reviewItem.location
+                                    }
+                                ) {
+                                    Text("Change")
+                                }
                             }
                         }
                     }
                 }
+            }
+
+            // ============================================================
+// IMPORT REVIEW - LOCATION EDITOR DIALOG
+// ============================================================
+
+            locationEditItem.value?.let { editItem ->
+
+                AlertDialog(
+                    onDismissRequest = {
+                        locationEditItem.value = null
+                    },
+
+                    title = {
+                        Text("Change location")
+                    },
+
+                    text = {
+
+                        Column {
+
+                            Text(
+                                text = editItem.productName,
+                                fontWeight = FontWeight.SemiBold
+                            )
+
+                            Spacer(
+                                modifier = Modifier.height(16.dp)
+                            )
+
+                            listOf(
+                                "Pantry",
+                                "Fridge",
+                                "Freezer"
+                            ).forEach { location ->
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            locationEditSelection.value = location
+                                        },
+                                    verticalAlignment =
+                                        Alignment.CenterVertically
+                                ) {
+
+                                    RadioButton(
+                                        selected =
+                                            locationEditSelection.value == location,
+                                        onClick = {
+                                            locationEditSelection.value = location
+                                        }
+                                    )
+
+                                    Text(location)
+                                }
+                            }
+                        }
+                    },
+
+                    confirmButton = {
+
+                        Button(
+                            onClick = {
+
+                                val itemToUpdate =
+                                    locationEditItem.value
+
+                                val newLocation =
+                                    locationEditSelection.value
+
+                                if (
+                                    itemToUpdate != null &&
+                                    newLocation.isNotBlank()
+                                ) {
+
+                                    lifecycleScope.launch {
+
+                                        saveLocationCorrection(
+                                            productName =
+                                                itemToUpdate.productName,
+                                            location =
+                                                newLocation
+                                        )
+
+                                        // ============================================================
+                                        // IMPORT REVIEW - REFRESH CORRECTED LOCATION
+                                        // ============================================================
+
+                                        importedItemsForReview.value =
+                                            importedItemsForReview.value.map { reviewItem ->
+
+                                                if (
+                                                    reviewItem.productName ==
+                                                    itemToUpdate.productName
+                                                ) {
+                                                    reviewItem.copy(
+                                                        location = newLocation
+                                                    )
+                                                } else {
+                                                    reviewItem
+                                                }
+                                            }
+
+                                        refreshProducts()
+
+                                        locationEditItem.value = null
+                                    }
+                                }
+                            }
+                        ) {
+                            Text("Save")
+                        }
+                    },
+
+                    dismissButton = {
+
+                        TextButton(
+                            onClick = {
+                                locationEditItem.value = null
+                            }
+                        ) {
+                            Text("Cancel")
+                        }
+                    }
+                )
             }
 
             Spacer(
@@ -666,6 +801,7 @@ class MainActivity : ComponentActivity() {
                 onClick = {
                     currentScreen.value = "HOME"
                 },
+
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Done")
@@ -800,12 +936,37 @@ class MainActivity : ComponentActivity() {
 
                                         lifecycleScope.launch {
 
-                                            importedItemsForReview.value =
+                                            // ============================================================
+                                            // IMPORT REVIEW - PREPARE DISPLAY ITEMS
+                                            // ============================================================
+
+                                            val receiptItems =
                                                 database
                                                     .receiptItemDao()
                                                     .getItemsForReceipt(
                                                         lastImportedReceiptId.longValue
                                                     )
+
+                                            importedItemsForReview.value =
+                                                receiptItems
+                                                    .filter { receiptItem ->
+
+                                                        HouseholdCategoryResolver.resolve(
+                                                            receiptItem.productName
+                                                        ) == HouseholdCategory.FOOD
+                                                    }
+                                                    .map { receiptItem ->
+
+                                                        ImportReviewItem(
+                                                            productName =
+                                                                receiptItem.productName,
+
+                                                            location =
+                                                                resolveStorageLocation(
+                                                                    receiptItem.productName
+                                                                )
+                                                        )
+                                                    }
 
                                             showImportReview.value = false
                                             currentScreen.value = "IMPORT_REVIEW"
@@ -1030,7 +1191,13 @@ class MainActivity : ComponentActivity() {
 
                 OutlinedButton(
                     onClick = {
-                        currentScreen.value = "RECEIPTS"
+
+                        lifecycleScope.launch {
+
+                            refreshReceipts()
+
+                            currentScreen.value = "RECEIPTS"
+                        }
                     },
                     modifier = Modifier.weight(1f)
                 ) {
@@ -1940,14 +2107,16 @@ class MainActivity : ComponentActivity() {
             Button(
                 onClick = {
 
-                    currentScreen.value = "RECEIPTS"
+                    lifecycleScope.launch {
 
+                        refreshReceipts()
+
+                        currentScreen.value = "RECEIPTS"
+                    }
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-
                 Text("Receipts")
-
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -2453,8 +2622,66 @@ class MainActivity : ComponentActivity() {
         "Fruit" to 7,
         "Other" to 14
     )
+
+    // ============================================================
+// IMPORT REVIEW - SAVE LOCATION CORRECTION
+// ============================================================
+
+    private suspend fun saveLocationCorrection(
+        productName: String,
+        location: String
+    ) {
+
+        val product =
+            database
+                .productDao()
+                .getProductByName(productName)
+
+        if (product != null) {
+            database
+                .productDao()
+                .updateLocationById(
+                    product.id,
+                    location
+                )
+        }
+
+        val productKey =
+            ProductPreferenceKeyResolver.resolve(productName)
+
+        database
+            .productLocationPreferenceDao()
+            .savePreference(
+                ProductLocationPreferenceEntity(
+                    productKey = productKey,
+                    originalName = productName,
+                    location = location,
+                    lastUpdated = System.currentTimeMillis()
+                )
+            )
+    }
+
+    // ============================================================
+    // IMPORT REVIEW - DISPLAY MODEL
+    // ============================================================
+
+    private data class ImportReviewItem(
+        val productName: String,
+        val location: String
+    )
+
     private val importedItemsForReview =
-        mutableStateOf<List<ReceiptItemEntity>>(emptyList())
+        mutableStateOf<List<ImportReviewItem>>(emptyList())
+
+    // ============================================================
+// IMPORT REVIEW - LOCATION EDITOR STATE
+// ============================================================
+
+    private val locationEditItem =
+        mutableStateOf<ImportReviewItem?>(null)
+
+    private val locationEditSelection =
+        mutableStateOf("")
     private val categoryDefaultLocations = mapOf(
         "Pantry Dry Goods" to "Pantry",
         "Canned Goods" to "Pantry",
@@ -2715,10 +2942,15 @@ class MainActivity : ComponentActivity() {
             Color.Gray
         }
     }
+    // ============================================================
+// RECEIPTS - REFRESH RECEIPT LIST
+// ============================================================
+
     private suspend fun refreshReceipts() {
 
         receiptItems.value =
-            database.receiptDao()
+            database
+                .receiptDao()
                 .getAllReceipts()
     }
 
