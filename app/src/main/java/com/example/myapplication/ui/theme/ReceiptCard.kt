@@ -2,6 +2,7 @@ package com.example.myapplication
 
 import androidx.compose.runtime.Composable
 import com.example.myapplication.data.ReceiptEntity
+import com.example.myapplication.data.ReceiptItemEntity
 import com.example.myapplication.data.RetailerTheme
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +33,7 @@ import androidx.compose.material3.Checkbox
 @Composable
 fun ReceiptCard(
     receipt: ReceiptEntity,
+    receiptProducts: List<ReceiptItemEntity>,
     theme: RetailerTheme,
     expanded: Boolean,
     onExpandToggle: () -> Unit,
@@ -53,11 +55,8 @@ fun ReceiptCard(
     // RECEIPT CARD - STRUCTURED PRODUCT DATA
     // ============================================================
 
-    val parsed =
-        ReceiptParser.parse(receipt.rawText)
-
     val structuredItemCount =
-        parsed.structuredItems.size
+        receiptProducts.size
 
     // ============================================================
     // RECEIPT CARD - MAIN CARD
@@ -114,7 +113,10 @@ fun ReceiptCard(
             // ====================================================
 
             Text(
-                text = theme.retailerName,
+                text =
+                    receipt.storeName
+                        ?.takeIf { it.isNotBlank() }
+                        ?: theme.retailerName,
                 style = MaterialTheme.typography.headlineSmall,
                 color = theme.headerColor
             )
@@ -232,9 +234,9 @@ fun ReceiptCard(
                     modifier = Modifier.height(12.dp)
                 )
 
-                if (parsed.structuredItems.isNotEmpty()) {
+                if (receiptProducts.isNotEmpty()) {
 
-                    parsed.structuredItems.forEach { item ->
+                    receiptProducts.forEach { item ->
 
                         Column(
                             modifier = Modifier
@@ -243,7 +245,7 @@ fun ReceiptCard(
                         ) {
 
                             Text(
-                                text = item.name,
+                                text = item.productName,
                                 style = MaterialTheme.typography.bodyLarge
                             )
 
@@ -257,10 +259,24 @@ fun ReceiptCard(
                                     Arrangement.SpaceBetween
                             ) {
 
+                                val details =
+                                    buildList {
+
+                                        item.quantity?.let {
+                                            add("Qty: $it")
+                                        }
+
+                                        item.unit?.let {
+                                            if (it.isNotBlank()) {
+                                                add(it)
+                                            }
+                                        }
+                                    }
+                                        .joinToString("  •  ")
+
                                 Text(
-                                    text = item.displayDetails(),
-                                    style =
-                                        MaterialTheme.typography.bodySmall
+                                    text = details,
+                                    style = MaterialTheme.typography.bodySmall
                                 )
 
                                 Text(
@@ -269,27 +285,15 @@ fun ReceiptCard(
                                             ?.let {
                                                 "$%.2f".format(it)
                                             }
+                                            ?: item.unitPrice
+                                                ?.let {
+                                                    "$%.2f".format(it)
+                                                }
                                             ?: "",
-                                    style =
-                                        MaterialTheme.typography.bodyMedium
+                                    style = MaterialTheme.typography.bodyMedium
                                 )
                             }
                         }
-                    }
-
-                } else {
-
-                    // ============================================
-                    // RECEIPT CARD - LEGACY PRODUCT FALLBACK
-                    // ============================================
-
-                    parsed.products.forEach { product ->
-
-                        Text(
-                            text = "• $product",
-                            style =
-                                MaterialTheme.typography.bodyMedium
-                        )
                     }
                 }
 

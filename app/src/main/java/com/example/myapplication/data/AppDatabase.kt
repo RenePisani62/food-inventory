@@ -15,9 +15,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProductKnowledgeOverrideEntity::class,
         ReceiptEntity::class,
         ReceiptItemEntity::class,
-        ProductLocationPreferenceEntity::class
+        ProductLocationPreferenceEntity::class,
+        ProductCategoryPreferenceEntity::class
     ],
-    version = 12
+    version = 13
 )
 
 abstract class AppDatabase : RoomDatabase() {
@@ -32,6 +33,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun productLocationPreferenceDao():
             ProductLocationPreferenceDao
 
+    abstract fun productCategoryPreferenceDao():
+            ProductCategoryPreferenceDao
     abstract fun receiptDao(): ReceiptDao
 
     abstract fun receiptItemDao(): ReceiptItemDao
@@ -98,6 +101,30 @@ abstract class AppDatabase : RoomDatabase() {
                     )
                 }
             }
+        // ============================================================
+        // DATABASE MIGRATION - LEARNED PRODUCT CLASSIFICATION
+        // ============================================================
+
+        private val MIGRATION_12_13 =
+            object : Migration(12, 13) {
+
+                override fun migrate(
+                    db: SupportSQLiteDatabase
+                ) {
+
+                    db.execSQL(
+                        """
+                CREATE TABLE IF NOT EXISTS `product_category_preferences` (
+                    `productKey` TEXT NOT NULL,
+                    `originalName` TEXT NOT NULL,
+                    `category` TEXT NOT NULL,
+                    `lastUpdated` INTEGER NOT NULL,
+                    PRIMARY KEY(`productKey`)
+                )
+                """.trimIndent()
+                    )
+                }
+            }
 
         @Volatile
         private var INSTANCE: AppDatabase? = null
@@ -117,7 +144,8 @@ abstract class AppDatabase : RoomDatabase() {
                         .addMigrations(
                             MIGRATION_9_10,
                             MIGRATION_10_11,
-                            MIGRATION_11_12
+                            MIGRATION_11_12,
+                            MIGRATION_12_13
                         )
                         .fallbackToDestructiveMigration()
                         .build()

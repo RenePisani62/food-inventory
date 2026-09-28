@@ -27,6 +27,13 @@ interface ReceiptItemDao {
     @Query("""
     SELECT *
     FROM receipt_items
+    ORDER BY id ASC
+""")
+    suspend fun getAllItems(): List<ReceiptItemEntity>
+
+    @Query("""
+    SELECT *
+    FROM receipt_items
     WHERE productName LIKE '%' || :productName || '%'
           COLLATE NOCASE
     ORDER BY id DESC

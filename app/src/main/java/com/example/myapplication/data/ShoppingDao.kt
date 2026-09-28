@@ -44,6 +44,11 @@ interface ShoppingDao {
     )
 
     @Query("""
+    DELETE FROM shopping_items
+    WHERE source = 'AUTO'
+""")
+    suspend fun clearAutoItems()
+    @Query("""
         DELETE FROM shopping_items
     """)
 
