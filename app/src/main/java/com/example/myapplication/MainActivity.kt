@@ -89,6 +89,8 @@ import com.example.myapplication.data.ParsedReceipt
 import com.example.myapplication.data.AnalyticsCalculator
 import com.example.myapplication.data.AnalyticsPeriod
 import com.example.myapplication.data.AnalyticsSummary
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 
 
@@ -124,6 +126,37 @@ class MainActivity : ComponentActivity() {
         mutableStateOf(false)
 
     private var currentScreen = mutableStateOf("HOME")
+
+    private val screenHistory =
+        mutableListOf<String>()
+
+    private fun navigateTo(
+        screen: String
+    ) {
+        if (currentScreen.value != screen) {
+
+            screenHistory.add(
+                currentScreen.value
+            )
+
+            currentScreen.value =
+                screen
+        }
+    }
+
+    private fun navigateBack(): Boolean {
+
+        if (screenHistory.isEmpty()) {
+            return false
+        }
+
+        currentScreen.value =
+            screenHistory.removeAt(
+                screenHistory.lastIndex
+            )
+
+        return true
+    }
     private var searchText = mutableStateOf("")
     private var showClearConfirm = mutableStateOf(false)
     private var showRebuildInventoryConfirm = mutableStateOf(false)
@@ -721,6 +754,22 @@ class MainActivity : ComponentActivity() {
                 launchScanner()
             } else {
                 scannedBarcode.value = "Camera permission denied"
+            }
+        }
+
+    private val receiptCameraPermissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+
+            if (granted) {
+                launchReceiptCamera()
+            } else {
+                Toast.makeText(
+                    this,
+                    "Camera permission is required to scan a paper receipt.",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
 
@@ -1757,6 +1806,12 @@ class MainActivity : ComponentActivity() {
 
                 MyApplicationTheme {
 
+                    androidx.activity.compose.BackHandler(
+                        enabled = currentScreen.value != "HOME"
+                    ) {
+                        navigateBack()
+                    }
+
                     Surface(
                         modifier = Modifier.fillMaxSize(),
                         color = MaterialTheme.colorScheme.background
@@ -1928,6 +1983,10 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+        var periodMenuExpanded by remember {
+            mutableStateOf(false)
+        }
+
         var analyticsSummary by remember {
             mutableStateOf<AnalyticsSummary?>(null)
         }
@@ -2006,6 +2065,124 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("← Back")
+            }
+
+            Spacer(
+                modifier = Modifier.height(20.dp)
+            )
+
+            Text(
+                text = "Period",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+
+            Spacer(
+                modifier = Modifier.height(6.dp)
+            )
+
+            Box(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+
+                OutlinedButton(
+                    onClick = {
+                        periodMenuExpanded = true
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+
+                    val periodLabel =
+                        when (selectedPeriod) {
+                            AnalyticsPeriod.LAST_30_DAYS ->
+                                "Last 30 days"
+
+                            AnalyticsPeriod.LAST_3_MONTHS ->
+                                "Last 3 months"
+
+                            AnalyticsPeriod.LAST_6_MONTHS ->
+                                "Last 6 months"
+
+                            AnalyticsPeriod.LAST_12_MONTHS ->
+                                "Last 12 months"
+
+                            AnalyticsPeriod.ALL_TIME ->
+                                "All time"
+                        }
+
+                    Text(
+                        text = "$periodLabel  ▼",
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = periodMenuExpanded,
+                    onDismissRequest = {
+                        periodMenuExpanded = false
+                    }
+                ) {
+
+                    DropdownMenuItem(
+                        text = {
+                            Text("Last 30 days")
+                        },
+                        onClick = {
+                            selectedPeriod =
+                                AnalyticsPeriod.LAST_30_DAYS
+
+                            periodMenuExpanded = false
+                        }
+                    )
+
+                    DropdownMenuItem(
+                        text = {
+                            Text("Last 3 months")
+                        },
+                        onClick = {
+                            selectedPeriod =
+                                AnalyticsPeriod.LAST_3_MONTHS
+
+                            periodMenuExpanded = false
+                        }
+                    )
+
+                    DropdownMenuItem(
+                        text = {
+                            Text("Last 6 months")
+                        },
+                        onClick = {
+                            selectedPeriod =
+                                AnalyticsPeriod.LAST_6_MONTHS
+
+                            periodMenuExpanded = false
+                        }
+                    )
+
+                    DropdownMenuItem(
+                        text = {
+                            Text("Last 12 months")
+                        },
+                        onClick = {
+                            selectedPeriod =
+                                AnalyticsPeriod.LAST_12_MONTHS
+
+                            periodMenuExpanded = false
+                        }
+                    )
+
+                    DropdownMenuItem(
+                        text = {
+                            Text("All time")
+                        },
+                        onClick = {
+                            selectedPeriod =
+                                AnalyticsPeriod.ALL_TIME
+
+                            periodMenuExpanded = false
+                        }
+                    )
+                }
             }
 
             Spacer(
@@ -2227,6 +2404,11 @@ class MainActivity : ComponentActivity() {
         var quickAddExpanded by remember {
             mutableStateOf(false)
         }
+
+        var showReceiptImportOptions by remember {
+                mutableStateOf(false)
+            }
+
         LaunchedEffect(Unit) {
             barcodeFocusRequester.requestFocus()
 
@@ -2272,7 +2454,7 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable {
-                        importReceiptLauncher.launch("application/pdf")
+                        showReceiptImportOptions = true
                     },
                 shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.primary
@@ -2314,6 +2496,100 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            if (showReceiptImportOptions) {
+
+                AlertDialog(
+                    onDismissRequest = {
+                        showReceiptImportOptions = false
+                    },
+
+                    title = {
+                        Text(
+                            text = "Import Receipt",
+                            fontWeight = FontWeight.Bold
+                        )
+                    },
+
+                    text = {
+
+                        Column(
+                            verticalArrangement =
+                                Arrangement.spacedBy(8.dp)
+                        ) {
+
+                            Button(
+                                onClick = {
+
+                                    showReceiptImportOptions = false
+
+                                    if (
+                                        androidx.core.content.ContextCompat
+                                            .checkSelfPermission(
+                                                this@MainActivity,
+                                                android.Manifest.permission.CAMERA
+                                            ) ==
+                                        android.content.pm.PackageManager.PERMISSION_GRANTED
+                                    ) {
+
+                                        launchReceiptCamera()
+
+                                    } else {
+
+                                        receiptCameraPermissionLauncher.launch(
+                                            android.Manifest.permission.CAMERA
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("📷  Scan Paper Receipt")
+                            }
+
+                            Button(
+                                onClick = {
+
+                                    showReceiptImportOptions = false
+
+                                    receiptImageLauncher.launch(
+                                        "image/*"
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("🖼  Import Receipt Image")
+                            }
+
+                            Button(
+                                onClick = {
+
+                                    showReceiptImportOptions = false
+
+                                    importReceiptLauncher.launch(
+                                        "application/pdf"
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("📄  Import Receipt PDF")
+                            }
+                        }
+                    },
+
+                    confirmButton = {},
+
+                    dismissButton = {
+
+                        TextButton(
+                            onClick = {
+                                showReceiptImportOptions = false
+                            }
+                        ) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+
             Spacer(modifier = Modifier.height(20.dp))
             Text(
                 text = "Household",
@@ -2330,7 +2606,7 @@ class MainActivity : ComponentActivity() {
                     .fillMaxWidth()
                     .clickable {
                         refreshProducts()
-                        currentScreen.value = "INVENTORY"
+                        navigateTo("INVENTORY")
                     },
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant
@@ -2426,7 +2702,7 @@ class MainActivity : ComponentActivity() {
 
                                 refreshShoppingList()
 
-                                currentScreen.value = "SHOPPING"
+                                navigateTo("SHOPPING")
                             }
                         },
                     shape = RoundedCornerShape(16.dp),
@@ -2468,7 +2744,7 @@ class MainActivity : ComponentActivity() {
 
                                 refreshReceipts()
 
-                                currentScreen.value = "RECEIPTS"
+                                navigateTo("RECEIPTS")
                             }
                         },
                     shape = RoundedCornerShape(16.dp),
@@ -2512,7 +2788,7 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable {
-                        currentScreen.value = "ANALYTICS"
+                        navigateTo("ANALYTICS")
                     },
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant
@@ -3336,7 +3612,7 @@ class MainActivity : ComponentActivity() {
                                 editingProduct.value = product
                                 editNameInput.value = product.itemName
                                 deleteQuantityInput.value = "1"
-                                currentScreen.value = "DETAIL"
+                                navigateTo("DETAIL")
                             },
                         shape = RoundedCornerShape(16.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant
@@ -3507,7 +3783,7 @@ class MainActivity : ComponentActivity() {
             TextButton(
                 onClick = {
                     editingProduct.value = null
-                    currentScreen.value = "INVENTORY"
+                    navigateBack()
                 }
             ) {
                 Text(
@@ -4400,26 +4676,22 @@ class MainActivity : ComponentActivity() {
             Button(
                 onClick = {
 
-                    val photoFile =
-                        java.io.File.createTempFile(
-                            "pantrypal_receipt_",
-                            ".jpg",
-                            cacheDir
-                        )
-
-                    val photoUri =
-                        androidx.core.content.FileProvider.getUriForFile(
+                    if (
+                        androidx.core.content.ContextCompat.checkSelfPermission(
                             this@MainActivity,
-                            "${packageName}.fileprovider",
-                            photoFile
+                            android.Manifest.permission.CAMERA
+                        ) ==
+                        android.content.pm.PackageManager.PERMISSION_GRANTED
+                    ) {
+
+                        launchReceiptCamera()
+
+                    } else {
+
+                        receiptCameraPermissionLauncher.launch(
+                            android.Manifest.permission.CAMERA
                         )
-
-                    receiptCameraUri =
-                        photoUri
-
-                    receiptCameraLauncher.launch(
-                        photoUri
-                    )
+                    }
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -4468,7 +4740,7 @@ class MainActivity : ComponentActivity() {
 
             OutlinedButton(
                 onClick = {
-                    currentScreen.value = "PRICE_HISTORY"
+                    navigateTo("PRICE_HISTORY")
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -4538,6 +4810,31 @@ class MainActivity : ComponentActivity() {
         }
 
     }
+
+    private fun launchReceiptCamera() {
+
+        val photoFile =
+            java.io.File.createTempFile(
+                "pantrypal_receipt_",
+                ".jpg",
+                cacheDir
+            )
+
+        val photoUri =
+            androidx.core.content.FileProvider.getUriForFile(
+                this,
+                "${packageName}.fileprovider",
+                photoFile
+            )
+
+        receiptCameraUri =
+            photoUri
+
+        receiptCameraLauncher.launch(
+            photoUri
+        )
+    }
+
     @Composable
     private fun PriceHistoryScreen() {
 
@@ -4583,7 +4880,7 @@ class MainActivity : ComponentActivity() {
 
             TextButton(
                 onClick = {
-                    currentScreen.value = "RECEIPTS"
+                    navigateBack()
                 }
             ) {
                 Text(
@@ -4689,7 +4986,11 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            item.unitPrice?.let { price ->
+                            val displayPrice =
+                                item.totalPrice
+                                    ?: item.unitPrice
+
+                            displayPrice?.let { price ->
 
                                 Spacer(
                                     modifier = Modifier.height(8.dp)
@@ -5236,10 +5537,149 @@ class MainActivity : ComponentActivity() {
 
     private suspend fun refreshReceipts() {
 
-        receiptItems.value =
+        val receipts =
             database
                 .receiptDao()
                 .getAllReceipts()
+
+        receiptItems.value =
+            receipts.sortedWith(
+                compareByDescending<ReceiptEntity> { receipt ->
+                    parseReceiptDateForSorting(
+                        receipt.receiptDate
+                    )
+                }
+                    .thenBy { receipt ->
+
+                        val storeName =
+                            receipt.storeName
+                                ?.trim()
+                                .orEmpty()
+
+                        if (
+                            storeName.isBlank() ||
+                            storeName.equals(
+                                "Unknown",
+                                ignoreCase = true
+                            )
+                        ) {
+                            1
+                        } else {
+                            0
+                        }
+                    }
+                    .thenBy { receipt ->
+                        receipt.storeName
+                            ?.trim()
+                            ?.lowercase(Locale.ENGLISH)
+                            .orEmpty()
+                    }
+                    .thenByDescending { receipt ->
+                        receipt.createdAt
+                    }
+            )
+    }
+
+    private fun parseReceiptDateForSorting(
+        value: String?
+    ): LocalDate? {
+
+        if (value.isNullOrBlank()) {
+            return null
+        }
+
+        val originalValue =
+            value.trim()
+
+        val normalisedValue =
+            originalValue.replace(
+                Regex("""(?i)\bSept\b"""),
+                "Sep"
+            )
+
+        val shortMonthDate =
+            runCatching {
+                LocalDate.parse(
+                    normalisedValue,
+                    DateTimeFormatter.ofPattern(
+                        "d MMM yyyy",
+                        Locale.ENGLISH
+                    )
+                )
+            }.getOrNull()
+
+        if (shortMonthDate != null) {
+            return shortMonthDate
+        }
+
+        val longMonthDate =
+            runCatching {
+                LocalDate.parse(
+                    normalisedValue,
+                    DateTimeFormatter.ofPattern(
+                        "d MMMM yyyy",
+                        Locale.ENGLISH
+                    )
+                )
+            }.getOrNull()
+
+        if (longMonthDate != null) {
+            return longMonthDate
+        }
+
+        val compactValue =
+            originalValue
+                .replace(" ", "")
+                .uppercase(Locale.ENGLISH)
+
+        val compactMatch =
+            Regex("""^(\d{1,2})([A-Z]{3})(\d{2})$""")
+                .matchEntire(compactValue)
+
+        if (compactMatch != null) {
+
+            val day =
+                compactMatch.groupValues[1]
+                    .toIntOrNull()
+
+            val month =
+                when (compactMatch.groupValues[2]) {
+                    "JAN" -> 1
+                    "FEB" -> 2
+                    "MAR" -> 3
+                    "APR" -> 4
+                    "MAY" -> 5
+                    "JUN" -> 6
+                    "JUL" -> 7
+                    "AUG" -> 8
+                    "SEP" -> 9
+                    "OCT" -> 10
+                    "NOV" -> 11
+                    "DEC" -> 12
+                    else -> null
+                }
+
+            val year =
+                compactMatch.groupValues[3]
+                    .toIntOrNull()
+                    ?.plus(2000)
+
+            if (
+                day != null &&
+                month != null &&
+                year != null
+            ) {
+                return runCatching {
+                    LocalDate.of(
+                        year,
+                        month,
+                        day
+                    )
+                }.getOrNull()
+            }
+        }
+
+        return null
     }
 
     private suspend fun refreshShoppingList() {

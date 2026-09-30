@@ -20,7 +20,13 @@ object AnalyticsCalculator {
             Locale.ENGLISH
         )
 
-    fun calculate(
+    private val longReceiptDateFormatter =
+        DateTimeFormatter.ofPattern(
+            "d MMMM yyyy",
+            Locale.ENGLISH
+        )
+
+       fun calculate(
         receipts: List<ReceiptEntity>,
         receiptItems: List<ReceiptItemEntity>,
         period: AnalyticsPeriod,
@@ -44,6 +50,26 @@ object AnalyticsCalculator {
                 AnalyticsPeriod.ALL_TIME ->
                     null
             }
+
+           // From here
+
+           receipts.forEach { receipt ->
+
+               val parsedDate =
+                   parseReceiptDate(
+                       receipt.receiptDate
+                   )
+
+               android.util.Log.e(
+                   "PantryPalAnalytics",
+                   "ID=${receipt.id} | " +
+                           "store=${receipt.storeName} | " +
+                           "rawDate='${receipt.receiptDate}' | " +
+                           "parsedDate=$parsedDate | " +
+                           "total=${receipt.totalAmount}"
+               )
+           }
+           // To here
 
         val filteredReceipts =
             receipts.filter { receipt ->
@@ -151,11 +177,129 @@ object AnalyticsCalculator {
             return null
         }
 
-        return runCatching {
-            LocalDate.parse(
-                value.trim(),
-                receiptDateFormatter
+        val originalValue =
+            value.trim()
+
+        /*
+         * Normalise a couple of receipt-specific
+         * month representations.
+         *
+         * Example:
+         * 16 Sept 2026 -> 16 Sep 2026
+         */
+        val normalisedValue =
+            originalValue.replace(
+                Regex("""(?i)\bSept\b"""),
+                "Sep"
             )
-        }.getOrNull()
+
+        /*
+         * Standard abbreviated month.
+         *
+         * Examples:
+         * 2 Apr 2026
+         * 27 May 2026
+         * 16 Sep 2026
+         */
+        val shortMonthDate =
+            runCatching {
+                LocalDate.parse(
+                    normalisedValue,
+                    receiptDateFormatter
+                )
+            }.getOrNull()
+
+        if (shortMonthDate != null) {
+            return shortMonthDate
+        }
+
+        /*
+         * Full month name.
+         *
+         * Examples:
+         * 17 June 2026
+         * 2 July 2026
+         * 8 July 2026
+         */
+        val longMonthDate =
+            runCatching {
+                LocalDate.parse(
+                    normalisedValue,
+                    longReceiptDateFormatter
+                )
+            }.getOrNull()
+
+        if (longMonthDate != null) {
+            return longMonthDate
+        }
+
+        /*
+         * Compact OCR date.
+         *
+         * Example:
+         * 16SEP26
+         */
+        val compactValue =
+            originalValue
+                .replace(" ", "")
+                .uppercase(Locale.ENGLISH)
+
+        val compactMatch =
+            Regex(
+                """^(\d{1,2})([A-Z]{3})(\d{2})$"""
+            )
+                .matchEntire(compactValue)
+
+        if (compactMatch != null) {
+
+            val day =
+                compactMatch
+                    .groupValues[1]
+                    .toIntOrNull()
+
+            val monthText =
+                compactMatch
+                    .groupValues[2]
+
+            val year =
+                compactMatch
+                    .groupValues[3]
+                    .toIntOrNull()
+                    ?.plus(2000)
+
+            val month =
+                when (monthText) {
+                    "JAN" -> 1
+                    "FEB" -> 2
+                    "MAR" -> 3
+                    "APR" -> 4
+                    "MAY" -> 5
+                    "JUN" -> 6
+                    "JUL" -> 7
+                    "AUG" -> 8
+                    "SEP" -> 9
+                    "OCT" -> 10
+                    "NOV" -> 11
+                    "DEC" -> 12
+                    else -> null
+                }
+
+            if (
+                day != null &&
+                month != null &&
+                year != null
+            ) {
+
+                return runCatching {
+                    LocalDate.of(
+                        year,
+                        month,
+                        day
+                    )
+                }.getOrNull()
+            }
+        }
+
+        return null
     }
 }
