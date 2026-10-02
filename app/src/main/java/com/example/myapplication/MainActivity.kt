@@ -91,6 +91,13 @@ import com.example.myapplication.data.AnalyticsPeriod
 import com.example.myapplication.data.AnalyticsSummary
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import androidx.compose.runtime.derivedStateOf
+import com.example.myapplication.data.PriceTrendObservation
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.nativeCanvas
+import com.example.myapplication.data.MonthlySpend
 
 
 
@@ -1837,6 +1844,9 @@ class MainActivity : ComponentActivity() {
                             "RECEIPTS" ->
                                 ReceiptScreen()
 
+                            "ARCHIVED_RECEIPTS" ->
+                                ArchivedReceiptScreen()
+
                             "ANALYTICS" ->
                                 AnalyticsScreen()
 
@@ -1975,6 +1985,761 @@ class MainActivity : ComponentActivity() {
    }
 
     @Composable
+    private fun PriceTrendChart(
+        observations: List<PriceTrendObservation>
+    ) {
+
+        if (observations.isEmpty()) {
+            return
+        }
+
+        val sortedObservations =
+            observations.sortedBy {
+                it.receiptDate
+            }
+
+        val minPrice =
+            sortedObservations.minOf {
+                it.price
+            }
+
+        val maxPrice =
+            sortedObservations.maxOf {
+                it.price
+            }
+
+        val priceRange =
+            (maxPrice - minPrice)
+                .takeIf { it > 0.0 }
+                ?: 1.0
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant
+        ) {
+
+            Column(
+                modifier = Modifier.padding(16.dp)
+            ) {
+
+                Text(
+                    text = "Price over time",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Spacer(
+                    modifier = Modifier.height(4.dp)
+                )
+
+                Text(
+                    text =
+                        "$${"%.2f".format(minPrice)} – " +
+                                "$${"%.2f".format(maxPrice)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(
+                    modifier = Modifier.height(12.dp)
+                )
+
+                val lineColor =
+                    MaterialTheme.colorScheme.primary
+
+                val axisColor =
+                    MaterialTheme.colorScheme.onSurfaceVariant
+
+                val gridColor =
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                        alpha = 0.25f
+                    )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+
+                    // Y-axis price labels
+                    Column(
+                        modifier = Modifier.height(220.dp),
+                        verticalArrangement =
+                            Arrangement.SpaceBetween
+                    ) {
+
+                        Text(
+                            text =
+                                "$${"%.2f".format(maxPrice)}",
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
+
+                        Text(
+                            text =
+                                "$${"%.2f".format(
+                                    (maxPrice + minPrice) / 2.0
+                                )}",
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
+
+                        Text(
+                            text =
+                                "$${"%.2f".format(minPrice)}",
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
+                    }
+
+                    Spacer(
+                        modifier = Modifier.width(8.dp)
+                    )
+
+                    Canvas(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(220.dp)
+                    ) {
+
+                        val leftPadding =
+                            8.dp.toPx()
+
+                        val rightPadding =
+                            8.dp.toPx()
+
+                        val topPadding =
+                            10.dp.toPx()
+
+                        val bottomPadding =
+                            32.dp.toPx()
+
+                        val graphWidth =
+                            size.width -
+                                    leftPadding -
+                                    rightPadding
+
+                        val graphHeight =
+                            size.height -
+                                    topPadding -
+                                    bottomPadding
+
+                        // Horizontal grid lines
+                        val gridYValues =
+                            listOf(
+                                topPadding,
+                                topPadding +
+                                        graphHeight / 2f,
+                                topPadding +
+                                        graphHeight
+                            )
+
+                        gridYValues.forEach { y ->
+
+                            drawLine(
+                                color = gridColor,
+                                start =
+                                    Offset(
+                                        leftPadding,
+                                        y
+                                    ),
+                                end =
+                                    Offset(
+                                        leftPadding +
+                                                graphWidth,
+                                        y
+                                    ),
+                                strokeWidth =
+                                    1.dp.toPx()
+                            )
+                        }
+
+                        // Y axis
+                        drawLine(
+                            color = axisColor,
+                            start =
+                                Offset(
+                                    leftPadding,
+                                    topPadding
+                                ),
+                            end =
+                                Offset(
+                                    leftPadding,
+                                    topPadding +
+                                            graphHeight
+                                ),
+                            strokeWidth =
+                                2.dp.toPx()
+                        )
+
+                        // X axis
+                        drawLine(
+                            color = axisColor,
+                            start =
+                                Offset(
+                                    leftPadding,
+                                    topPadding +
+                                            graphHeight
+                                ),
+                            end =
+                                Offset(
+                                    leftPadding +
+                                            graphWidth,
+                                    topPadding +
+                                            graphHeight
+                                ),
+                            strokeWidth =
+                                2.dp.toPx()
+                        )
+
+                        val firstDate =
+                            sortedObservations
+                                .first()
+                                .receiptDate
+
+                        val lastDate =
+                            sortedObservations
+                                .last()
+                                .receiptDate
+
+                        val totalDays =
+                            java.time.temporal.ChronoUnit.DAYS
+                                .between(
+                                    firstDate,
+                                    lastDate
+                                )
+                                .coerceAtLeast(1)
+
+                        val points =
+                            sortedObservations.map { observation ->
+
+                                val daysFromStart =
+                                    java.time.temporal.ChronoUnit.DAYS
+                                        .between(
+                                            firstDate,
+                                            observation.receiptDate
+                                        )
+
+                                val datePosition =
+                                    daysFromStart.toFloat() /
+                                            totalDays.toFloat()
+
+                                val x =
+                                    if (
+                                        sortedObservations.size == 1
+                                    ) {
+                                        leftPadding +
+                                                graphWidth / 2f
+                                    } else {
+                                        leftPadding +
+                                                graphWidth * datePosition
+                                    }
+
+                                val normalisedPrice =
+                                    (
+                                            observation.price -
+                                                    minPrice
+                                            ) /
+                                            priceRange
+
+                                val y =
+                                    topPadding +
+                                            graphHeight -
+                                            (
+                                                    graphHeight *
+                                                            normalisedPrice
+                                                    ).toFloat()
+
+                                Offset(
+                                    x = x,
+                                    y = y
+                                )
+                            }
+
+                        if (points.size > 1) {
+
+                            val path =
+                                Path().apply {
+
+                                    moveTo(
+                                        points.first().x,
+                                        points.first().y
+                                    )
+
+                                    points
+                                        .drop(1)
+                                        .forEach { point ->
+
+                                            lineTo(
+                                                point.x,
+                                                point.y
+                                            )
+                                        }
+                                }
+
+                            drawPath(
+                                path = path,
+                                color = lineColor,
+                                style =
+                                    androidx.compose.ui.graphics
+                                        .drawscope.Stroke(
+                                            width =
+                                                4.dp.toPx()
+                                        )
+                            )
+                        }
+
+                        points.forEach { point ->
+
+                            drawCircle(
+                                color = lineColor,
+                                radius = 7.dp.toPx(),
+                                center = point
+                            )
+                        }
+
+// X-axis date labels.
+// Draw them in the same coordinate system as the plotted points.
+                        val dateFormatter =
+                            DateTimeFormatter.ofPattern(
+                                "d MMM",
+                                Locale.ENGLISH
+                            )
+
+                        val firstDateLabel =
+                            sortedObservations
+                                .first()
+                                .receiptDate
+                                .format(dateFormatter)
+
+                        val lastDateLabel =
+                            sortedObservations
+                                .last()
+                                .receiptDate
+                                .format(dateFormatter)
+
+                        val labelPaint =
+                            android.graphics.Paint().apply {
+                                color =
+                                    android.graphics.Color.rgb(
+                                        45,
+                                        91,
+                                        45
+                                    )
+
+                                textSize =
+                                    14.dp.toPx()
+
+                                isAntiAlias = true
+                            }
+
+                        val labelY =
+                            size.height -
+                                    2.dp.toPx()
+
+// First date begins at the exact X coordinate
+// of the first plotted observation.
+                        drawContext.canvas.nativeCanvas.drawText(
+                            firstDateLabel,
+                            points.first().x,
+                            labelY,
+                            labelPaint
+                        )
+
+// Last date ends at the exact X coordinate
+// of the final plotted observation.
+                        labelPaint.textAlign =
+                            android.graphics.Paint.Align.RIGHT
+
+                        drawContext.canvas.nativeCanvas.drawText(
+                            lastDateLabel,
+                            points.last().x,
+                            labelY,
+                            labelPaint
+                        )
+                    }
+                }
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+
+
+            }
+        }
+    }
+
+    @Composable
+    private fun MonthlySpendChart(
+        monthlySpend: List<MonthlySpend>
+    ) {
+
+        if (monthlySpend.isEmpty()) {
+            return
+        }
+
+        val sortedMonths =
+            monthlySpend.sortedWith(
+                compareBy<MonthlySpend> {
+                    it.year
+                }.thenBy {
+                    it.month
+                }
+            )
+
+        val minSpend =
+            sortedMonths.minOf {
+                it.amount
+            }
+
+        val maxSpend =
+            sortedMonths.maxOf {
+                it.amount
+            }
+
+        val spendRange =
+            (maxSpend - minSpend)
+                .takeIf { it > 0.0 }
+                ?: 1.0
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant
+        ) {
+
+            Column(
+                modifier = Modifier.padding(16.dp)
+            ) {
+
+                Text(
+                    text = "Monthly spending trend",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Spacer(
+                    modifier = Modifier.height(4.dp)
+                )
+
+                Text(
+                    text =
+                        "$${"%.2f".format(minSpend)} – " +
+                                "$${"%.2f".format(maxSpend)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(
+                    modifier = Modifier.height(12.dp)
+                )
+
+                val lineColor =
+                    MaterialTheme.colorScheme.primary
+
+                val axisColor =
+                    MaterialTheme.colorScheme.onSurfaceVariant
+
+                val gridColor =
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                        alpha = 0.25f
+                    )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+
+                    Column(
+                        modifier = Modifier.height(220.dp),
+                        verticalArrangement =
+                            Arrangement.SpaceBetween
+                    ) {
+
+                        Text(
+                            text =
+                                "$${"%.2f".format(maxSpend)}",
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
+
+                        Text(
+                            text =
+                                "$${"%.2f".format(
+                                    (maxSpend + minSpend) / 2.0
+                                )}",
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
+
+                        Text(
+                            text =
+                                "$${"%.2f".format(minSpend)}",
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
+                    }
+
+                    Spacer(
+                        modifier = Modifier.width(8.dp)
+                    )
+
+                    Canvas(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(220.dp)
+                    ) {
+
+                        val leftPadding =
+                            8.dp.toPx()
+
+                        val rightPadding =
+                            8.dp.toPx()
+
+                        val topPadding =
+                            10.dp.toPx()
+
+                        val bottomPadding =
+                            32.dp.toPx()
+
+                        val graphWidth =
+                            size.width -
+                                    leftPadding -
+                                    rightPadding
+
+                        val graphHeight =
+                            size.height -
+                                    topPadding -
+                                    bottomPadding
+
+                        val gridYValues =
+                            listOf(
+                                topPadding,
+                                topPadding +
+                                        graphHeight / 2f,
+                                topPadding +
+                                        graphHeight
+                            )
+
+                        gridYValues.forEach { y ->
+
+                            drawLine(
+                                color = gridColor,
+                                start =
+                                    Offset(
+                                        leftPadding,
+                                        y
+                                    ),
+                                end =
+                                    Offset(
+                                        leftPadding +
+                                                graphWidth,
+                                        y
+                                    ),
+                                strokeWidth =
+                                    1.dp.toPx()
+                            )
+                        }
+
+                        drawLine(
+                            color = axisColor,
+                            start =
+                                Offset(
+                                    leftPadding,
+                                    topPadding
+                                ),
+                            end =
+                                Offset(
+                                    leftPadding,
+                                    topPadding +
+                                            graphHeight
+                                ),
+                            strokeWidth =
+                                2.dp.toPx()
+                        )
+
+                        drawLine(
+                            color = axisColor,
+                            start =
+                                Offset(
+                                    leftPadding,
+                                    topPadding +
+                                            graphHeight
+                                ),
+                            end =
+                                Offset(
+                                    leftPadding +
+                                            graphWidth,
+                                    topPadding +
+                                            graphHeight
+                                ),
+                            strokeWidth =
+                                2.dp.toPx()
+                        )
+
+                        val firstMonthIndex =
+                            sortedMonths.first().year * 12 +
+                                    sortedMonths.first().month
+
+                        val lastMonthIndex =
+                            sortedMonths.last().year * 12 +
+                                    sortedMonths.last().month
+
+                        val totalMonths =
+                            (lastMonthIndex - firstMonthIndex)
+                                .coerceAtLeast(1)
+
+                        val points =
+                            sortedMonths.map { month ->
+
+                                val monthIndex =
+                                    month.year * 12 +
+                                            month.month
+
+                                val monthsFromStart =
+                                    monthIndex -
+                                            firstMonthIndex
+
+                                val monthPosition =
+                                    monthsFromStart.toFloat() /
+                                            totalMonths.toFloat()
+
+                                val x =
+                                    if (sortedMonths.size == 1) {
+                                        leftPadding +
+                                                graphWidth / 2f
+                                    } else {
+                                        leftPadding +
+                                                graphWidth *
+                                                monthPosition
+                                    }
+
+                                val normalisedSpend =
+                                    (month.amount -
+                                            minSpend) /
+                                            spendRange
+
+                                val y =
+                                    topPadding +
+                                            graphHeight -
+                                            (
+                                                    graphHeight *
+                                                            normalisedSpend
+                                                    ).toFloat()
+
+                                Offset(
+                                    x = x,
+                                    y = y
+                                )
+                            }
+
+                        if (points.size > 1) {
+
+                            val path =
+                                Path().apply {
+
+                                    moveTo(
+                                        points.first().x,
+                                        points.first().y
+                                    )
+
+                                    points
+                                        .drop(1)
+                                        .forEach { point ->
+
+                                            lineTo(
+                                                point.x,
+                                                point.y
+                                            )
+                                        }
+                                }
+
+                            drawPath(
+                                path = path,
+                                color = lineColor,
+                                style =
+                                    androidx.compose.ui.graphics
+                                        .drawscope.Stroke(
+                                            width =
+                                                4.dp.toPx()
+                                        )
+                            )
+                        }
+
+                        points.forEach { point ->
+
+                            drawCircle(
+                                color = lineColor,
+                                radius = 7.dp.toPx(),
+                                center = point
+                            )
+                        }
+
+                        val monthFormatter =
+                            DateTimeFormatter.ofPattern(
+                                "MMM yy",
+                                Locale.ENGLISH
+                            )
+
+                        val firstMonthLabel =
+                            LocalDate.of(
+                                sortedMonths.first().year,
+                                sortedMonths.first().month,
+                                1
+                            ).format(monthFormatter)
+
+                        val lastMonthLabel =
+                            LocalDate.of(
+                                sortedMonths.last().year,
+                                sortedMonths.last().month,
+                                1
+                            ).format(monthFormatter)
+
+                        val labelPaint =
+                            android.graphics.Paint().apply {
+
+                                color =
+                                    android.graphics.Color.rgb(
+                                        45,
+                                        91,
+                                        45
+                                    )
+
+                                textSize =
+                                    14.dp.toPx()
+
+                                isAntiAlias = true
+                            }
+
+                        val labelY =
+                            size.height -
+                                    2.dp.toPx()
+
+                        drawContext.canvas.nativeCanvas.drawText(
+                            firstMonthLabel,
+                            points.first().x,
+                            labelY,
+                            labelPaint
+                        )
+
+                        labelPaint.textAlign =
+                            android.graphics.Paint.Align.RIGHT
+
+                        drawContext.canvas.nativeCanvas.drawText(
+                            lastMonthLabel,
+                            points.last().x,
+                            labelY,
+                            labelPaint
+                        )
+                    }
+                }
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+            }
+        }
+    }
+
+    @Composable
     private fun AnalyticsScreen() {
 
         var selectedPeriod by remember {
@@ -1989,6 +2754,20 @@ class MainActivity : ComponentActivity() {
 
         var analyticsSummary by remember {
             mutableStateOf<AnalyticsSummary?>(null)
+        }
+
+        var priceTrendSearch by remember {
+            mutableStateOf("")
+        }
+
+        var priceTrendResults by remember {
+            mutableStateOf<List<ReceiptItemEntity>>(
+                emptyList()
+            )
+        }
+
+        var priceTrendHasSearched by remember {
+            mutableStateOf(false)
         }
 
         LaunchedEffect(selectedPeriod) {
@@ -2249,6 +3028,53 @@ class MainActivity : ComponentActivity() {
                                 MaterialTheme.colorScheme
                                     .onPrimary
                         )
+
+                        if (
+                            summary.earliestReceiptDate != null &&
+                            summary.latestReceiptDate != null
+                        ) {
+
+                            Spacer(
+                                modifier =
+                                    Modifier.height(12.dp)
+                            )
+
+                            Text(
+                                text = "Receipt period",
+                                style =
+                                    MaterialTheme.typography
+                                        .bodyMedium,
+                                fontWeight =
+                                    FontWeight.SemiBold,
+                                color =
+                                    MaterialTheme.colorScheme
+                                        .onPrimary
+                            )
+
+                            Spacer(
+                                modifier =
+                                    Modifier.height(2.dp)
+                            )
+
+                            val displayDateFormatter =
+                                DateTimeFormatter.ofPattern(
+                                    "d MMM yyyy",
+                                    Locale.ENGLISH
+                                )
+
+                            Text(
+                                text =
+                                    "${summary.earliestReceiptDate.format(displayDateFormatter)}" +
+                                            " – " +
+                                            "${summary.latestReceiptDate.format(displayDateFormatter)}",
+                                style =
+                                    MaterialTheme.typography
+                                        .bodyMedium,
+                                color =
+                                    MaterialTheme.colorScheme
+                                        .onPrimary
+                            )
+                        }
                     }
                 }
 
@@ -2393,6 +3219,423 @@ class MainActivity : ComponentActivity() {
                                 Modifier.height(8.dp)
                         )
                     }
+
+                Spacer(
+                    modifier = Modifier.height(20.dp)
+                )
+                Text(
+                    text = "Monthly spend",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(
+                    modifier = Modifier.height(4.dp)
+                )
+
+                Text(
+                    text = "Household spending by purchase month.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(
+                    modifier = Modifier.height(12.dp)
+                )
+
+                MonthlySpendChart(
+                    monthlySpend = summary.monthlySpend
+                )
+
+                Spacer(
+                    modifier = Modifier.height(16.dp)
+                )
+
+                summary.monthlySpend
+                    .asReversed()
+                    .forEach { month ->
+
+                        val monthDate =
+                            LocalDate.of(
+                                month.year,
+                                month.month,
+                                1
+                            )
+
+                        val monthLabel =
+                            monthDate.format(
+                                DateTimeFormatter.ofPattern(
+                                    "MMMM yyyy",
+                                    Locale.ENGLISH
+                                )
+                            )
+
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            color =
+                                MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalAlignment =
+                                    Alignment.CenterVertically
+                            ) {
+
+                                Column(
+                                    modifier = Modifier.weight(1f)
+                                ) {
+
+                                    Text(
+                                        text = monthLabel,
+                                        style =
+                                            MaterialTheme.typography.bodyLarge,
+                                        fontWeight =
+                                            FontWeight.SemiBold
+                                    )
+
+                                    Spacer(
+                                        modifier = Modifier.height(2.dp)
+                                    )
+
+                                    Text(
+                                        text =
+                                            "${month.receiptCount} " +
+                                                    if (month.receiptCount == 1) {
+                                                        "receipt"
+                                                    } else {
+                                                        "receipts"
+                                                    },
+                                        style =
+                                            MaterialTheme.typography.bodyMedium,
+                                        color =
+                                            MaterialTheme.colorScheme
+                                                .onSurfaceVariant
+                                    )
+
+                                    Spacer(
+                                        modifier = Modifier.height(4.dp)
+                                    )
+
+                                    if (
+                                        month.previousMonthChange != null &&
+                                        month.previousMonthPercentChange != null
+                                    ) {
+
+                                        val changeAmountText =
+                                            if (month.previousMonthChange >= 0) {
+                                                "+$" +
+                                                        "%.2f".format(
+                                                            month.previousMonthChange
+                                                        )
+                                            } else {
+                                                "-$" +
+                                                        "%.2f".format(
+                                                            -month.previousMonthChange
+                                                        )
+                                            }
+
+                                        val percentPrefix =
+                                            if (month.previousMonthPercentChange >= 0) {
+                                                "+"
+                                            } else {
+                                                ""
+                                            }
+
+                                        Text(
+                                            text =
+                                                "vs previous month:\n" +
+                                                        changeAmountText +
+                                                        " (" +
+                                                        percentPrefix +
+                                                        "%.1f".format(
+                                                            month.previousMonthPercentChange
+                                                        ) +
+                                                        "%)",
+                                            style =
+                                                MaterialTheme.typography.bodySmall,
+                                            color =
+                                                MaterialTheme.colorScheme
+                                                    .onSurfaceVariant
+                                        )
+
+                                    } else {
+
+                                        Text(
+                                            text = "No previous-month data",
+                                            style =
+                                                MaterialTheme.typography.bodySmall,
+                                            color =
+                                                MaterialTheme.colorScheme
+                                                    .onSurfaceVariant
+                                        )
+                                   }
+
+                                }
+
+                                Text(
+                                    text =
+                                        "$${"%.2f".format(month.amount)}",
+                                    style =
+                                        MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color =
+                                        MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+
+                        Spacer(
+                            modifier = Modifier.height(8.dp)
+                        )
+                    }
+
+                Spacer(
+                    modifier = Modifier.height(20.dp)
+                )
+
+                Text(
+                    text = "Price trends",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(
+                    modifier = Modifier.height(4.dp)
+                )
+
+                Text(
+                    text = "Track how a product's price has changed over time.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(
+                    modifier = Modifier.height(12.dp)
+                )
+
+                OutlinedTextField(
+                    value = priceTrendSearch,
+                    onValueChange = {
+                        priceTrendSearch = it
+                    },
+                    label = {
+                        Text("Product name")
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(
+                    modifier = Modifier.height(12.dp)
+                )
+
+                Button(
+                    onClick = {
+
+                        lifecycleScope.launch {
+
+                            val searchTerm =
+                                priceTrendSearch.trim()
+
+                            priceTrendResults =
+                                database
+                                    .receiptItemDao()
+                                    .getPriceHistory(
+                                        searchTerm
+                                    )
+
+                            priceTrendHasSearched = true
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Search Price Trends")
+                }
+
+                Spacer(
+                    modifier = Modifier.height(16.dp)
+                )
+
+                if (priceTrendResults.isNotEmpty()) {
+                    val consolidatedPriceTrends =
+                        priceTrendResults
+                            .mapNotNull { item ->
+
+                                val price =
+                                    item.totalPrice
+                                        ?: item.unitPrice
+
+                                val receiptDate =
+                                    parseReceiptDateForSorting(
+                                        item.receiptDate
+                                    )
+
+                                if (
+                                    price == null ||
+                                    receiptDate == null
+                                ) {
+                                    null
+                                } else {
+                                    Triple(
+                                        receiptDate,
+                                        item.retailer,
+                                        price
+                                    )
+                                }
+                            }
+                            .groupingBy { observation ->
+                                observation
+                            }
+                            .eachCount()
+                            .map { (observation, purchaseCount) ->
+
+                                PriceTrendObservation(
+                                    receiptDate =
+                                        observation.first,
+                                    retailer =
+                                        observation.second,
+                                    price =
+                                        observation.third,
+                                    purchaseCount =
+                                        purchaseCount
+                                )
+                            }
+                            .sortedBy { observation ->
+                                observation.receiptDate
+                            }
+
+                    Text(
+                        text =
+                            "${consolidatedPriceTrends.size} price observations",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(8.dp)
+                    )
+
+                    PriceTrendChart(
+                        observations = consolidatedPriceTrends
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(12.dp)
+                    )
+
+                    consolidatedPriceTrends.forEach { observation ->
+
+                        val receiptDate =
+                            observation.receiptDate
+
+                        val retailer =
+                            observation.retailer
+
+                        val price =
+                            observation.price
+
+                        val purchaseCount =
+                            observation.purchaseCount
+
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            color =
+                                MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+
+                            Column(
+                                modifier = Modifier.padding(16.dp)
+                            ) {
+
+                                Text(
+                                    text =
+                                        receiptDate.format(
+                                            DateTimeFormatter.ofPattern(
+                                                "d MMM yyyy",
+                                                Locale.ENGLISH
+                                            )
+                                        ),
+                                    style =
+                                        MaterialTheme.typography.bodyLarge,
+                                    fontWeight =
+                                        FontWeight.SemiBold
+                                )
+
+                                Spacer(
+                                    modifier = Modifier.height(2.dp)
+                                )
+
+                                Text(
+                                    text = retailer,
+                                    style =
+                                        MaterialTheme.typography.bodyMedium,
+                                    color =
+                                        MaterialTheme.colorScheme
+                                            .onSurfaceVariant
+                                )
+
+                                Spacer(
+                                    modifier = Modifier.height(6.dp)
+                                )
+
+                                Text(
+                                    text =
+                                        "$${"%.2f".format(price)}",
+                                    style =
+                                        MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color =
+                                        MaterialTheme.colorScheme.primary
+                                )
+
+                                if (purchaseCount > 1) {
+
+                                    Spacer(
+                                        modifier = Modifier.height(2.dp)
+                                    )
+
+                                    Text(
+                                        text =
+                                            "$purchaseCount purchased",
+                                        style =
+                                            MaterialTheme.typography.bodyMedium,
+                                        color =
+                                            MaterialTheme.colorScheme
+                                                .onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(
+                            modifier = Modifier.height(8.dp)
+                        )
+                    }
+
+
+                } else if (priceTrendHasSearched) {
+
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        color =
+                            MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+
+                        Text(
+                            text = "No price history found.",
+                            style =
+                                MaterialTheme.typography.bodyMedium,
+                            color =
+                                MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                }
             }
         }
     }
@@ -4394,6 +5637,37 @@ class MainActivity : ComponentActivity() {
             "RECEIPT SCREEN OPENED"
         )
 
+        val archiveCutoffDate =
+            LocalDate.now().minusYears(1)
+
+        val activeReceipts =
+            receiptItems.value.filter { receipt ->
+
+                val receiptDate =
+                    parseReceiptDateForSorting(
+                        receipt.receiptDate
+                    )
+
+                receiptDate == null ||
+                        !receiptDate.isBefore(
+                            archiveCutoffDate
+                        )
+            }
+
+        val archivedReceipts =
+            receiptItems.value.filter { receipt ->
+
+                val receiptDate =
+                    parseReceiptDateForSorting(
+                        receipt.receiptDate
+                    )
+
+                receiptDate != null &&
+                        receiptDate.isBefore(
+                            archiveCutoffDate
+                        )
+            }
+
         Column(
 
             modifier = Modifier
@@ -4436,42 +5710,62 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.height(12.dp)
             )
 
-            TextButton(
-                onClick = {
-                    currentScreen.value = "HOME"
-                }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = "‹ Back to Home",
-                    fontWeight = FontWeight.SemiBold
-                )
+
+                TextButton(
+                    onClick = {
+                        currentScreen.value = "HOME"
+                    }
+                ) {
+                    Text(
+                        text = "‹ Back to Home",
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                TextButton(
+                    onClick = {
+                        receiptSelectionMode.value =
+                            !receiptSelectionMode.value
+
+                        if (!receiptSelectionMode.value) {
+                            selectedReceiptIds.value = emptySet()
+                        }
+                    }
+                ) {
+                    Text(
+                        text =
+                            if (receiptSelectionMode.value)
+                                "Cancel"
+                            else
+                                "Select",
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
 
             Spacer(
                 modifier = Modifier.height(8.dp)
             )
 
-            TextButton(
+            OutlinedButton(
                 onClick = {
-
-                    receiptSelectionMode.value =
-                        !receiptSelectionMode.value
-
-                    if (!receiptSelectionMode.value) {
-                        selectedReceiptIds.value = emptySet()
-                    }
-                }
+                    navigateTo("ARCHIVED_RECEIPTS")
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = archivedReceipts.isNotEmpty()
             ) {
-
                 Text(
                     text =
-                        if (receiptSelectionMode.value)
-                            "Cancel selection"
-                        else
-                            "Select receipts",
+                        "View Archived Receipts (${archivedReceipts.size})",
                     fontWeight = FontWeight.SemiBold
                 )
             }
+
             if (
                 receiptSelectionMode.value &&
                 selectedReceiptIds.value.isNotEmpty()
@@ -4509,13 +5803,13 @@ class MainActivity : ComponentActivity() {
             )
 
 
-                if (receiptItems.value.isEmpty()) {
+            if (activeReceipts.isEmpty()) {
 
-                    Text("No receipts imported yet.")
+                Text("No active receipts.")
 
-                } else {
+            } else {
 
-                    receiptItems.value.forEach { receipt ->
+                activeReceipts.forEach { receipt ->
                         android.util.Log.e(
                             "PantryPalReceipt",
                             "RECEIPT FOUND: ${receipt.storeName}"
@@ -4811,6 +6105,157 @@ class MainActivity : ComponentActivity() {
 
     }
 
+    @Composable
+    private fun ArchivedReceiptScreen() {
+
+        val archiveCutoffDate =
+            LocalDate.now().minusYears(1)
+
+        val archivedReceipts =
+            receiptItems.value.filter { receipt ->
+
+                val receiptDate =
+                    parseReceiptDateForSorting(
+                        receipt.receiptDate
+                    )
+
+                receiptDate != null &&
+                        receiptDate.isBefore(
+                            archiveCutoffDate
+                        )
+            }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(
+                    rememberScrollState()
+                )
+                .padding(16.dp)
+                .padding(bottom = 80.dp)
+        ) {
+
+            Text(
+                text = "PantryPal",
+                style =
+                    MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color =
+                    MaterialTheme.colorScheme.primary
+            )
+
+            Spacer(
+                modifier = Modifier.height(4.dp)
+            )
+
+            Text(
+                text = "Archived Receipts",
+                style =
+                    MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(4.dp)
+            )
+
+            Text(
+                text =
+                    "Receipts more than 12 months old",
+                style =
+                    MaterialTheme.typography.bodyMedium,
+                color =
+                    MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            TextButton(
+                onClick = {
+                    navigateBack()
+                }
+            ) {
+                Text(
+                    text = "‹ Back to Receipts",
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
+
+            if (archivedReceipts.isEmpty()) {
+
+                Text(
+                    text = "No archived receipts."
+                )
+
+            } else {
+
+                archivedReceipts.forEach { receipt ->
+
+                    var expanded by remember(
+                        receipt.id
+                    ) {
+                        mutableStateOf(false)
+                    }
+
+                    val theme =
+                        RetailerThemeResolver
+                            .getTheme(
+                                receipt.storeName
+                            )
+
+                    var storedReceiptProducts by remember(
+                        receipt.id
+                    ) {
+                        mutableStateOf<
+                                List<ReceiptItemEntity>
+                                >(emptyList())
+                    }
+
+                    LaunchedEffect(receipt.id) {
+
+                        storedReceiptProducts =
+                            database
+                                .receiptItemDao()
+                                .getItemsForReceipt(
+                                    receipt.id.toLong()
+                                )
+                    }
+
+                    ReceiptCard(
+                        receipt = receipt,
+                        receiptProducts =
+                            storedReceiptProducts,
+                        theme = theme,
+                        expanded = expanded,
+
+                        onExpandToggle = {
+                            expanded = !expanded
+                        },
+
+                        onDelete = {
+                            // Archived receipts are
+                            // view-only for now.
+                        },
+
+                        selectionMode = false,
+
+                        selected = false,
+
+                        onSelectionChange = {
+                            // No selection mode
+                            // in Archive V1.
+                        }
+                    )
+                }
+            }
+        }
+    }
     private fun launchReceiptCamera() {
 
         val photoFile =

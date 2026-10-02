@@ -161,12 +161,121 @@ object AnalyticsCalculator {
                     it.amount
                 }
 
-        return AnalyticsSummary(
-            totalSpend = totalSpend,
-            receiptCount = filteredReceipts.size,
-            retailerSpend = retailerSpend,
-            productSpend = productSpend
-        )
+           val includedReceiptDates =
+               filteredReceipts
+                   .mapNotNull { receipt ->
+                       parseReceiptDate(
+                           receipt.receiptDate
+                       )
+                   }
+
+           val earliestReceiptDate =
+               includedReceiptDates.minOrNull()
+
+           val latestReceiptDate =
+               includedReceiptDates.maxOrNull()
+           val monthlySpendBase =
+               receipts
+                   .mapNotNull { receipt ->
+
+                       val receiptDate =
+                           parseReceiptDate(
+                               receipt.receiptDate
+                           )
+
+                       val totalAmount =
+                           receipt.totalAmount
+
+                       if (
+                           receiptDate == null ||
+                           totalAmount == null
+                       ) {
+                           null
+                       } else {
+                           Triple(
+                               receiptDate.year,
+                               receiptDate.monthValue,
+                               totalAmount
+                           )
+                       }
+                   }
+                   .groupBy { entry ->
+                       entry.first to entry.second
+                   }
+                   .map { (yearMonth, entries) ->
+
+                       MonthlySpend(
+                           year = yearMonth.first,
+                           month = yearMonth.second,
+                           amount =
+                               entries.sumOf { entry ->
+                                   entry.third
+                               },
+                           receiptCount =
+                               entries.size
+                       )
+                   }
+                   .sortedWith(
+                       compareBy<MonthlySpend> {
+                           it.year
+                       }.thenBy {
+                           it.month
+                       }
+                   )
+
+           val monthlySpend =
+               monthlySpendBase.map { currentMonth ->
+
+                   val currentDate =
+                       LocalDate.of(
+                           currentMonth.year,
+                           currentMonth.month,
+                           1
+                       )
+
+                   val previousDate =
+                       currentDate.minusMonths(1)
+
+                   val previousMonth =
+                       monthlySpendBase.firstOrNull { candidate ->
+                           candidate.year == previousDate.year &&
+                                   candidate.month == previousDate.monthValue
+                       }
+
+                   if (previousMonth == null) {
+
+                       currentMonth
+
+                   } else {
+
+                       val change =
+                           currentMonth.amount -
+                                   previousMonth.amount
+
+                       val percentChange =
+                           if (previousMonth.amount == 0.0) {
+                               null
+                           } else {
+                               (change / previousMonth.amount) * 100.0
+                           }
+
+                       currentMonth.copy(
+                           previousMonthChange = change,
+                           previousMonthPercentChange =
+                               percentChange
+                       )
+                   }
+               }
+
+           return AnalyticsSummary(
+               totalSpend = totalSpend,
+               receiptCount = filteredReceipts.size,
+               retailerSpend = retailerSpend,
+               productSpend = productSpend,
+               earliestReceiptDate = earliestReceiptDate,
+               latestReceiptDate = latestReceiptDate,
+               monthlySpend = monthlySpend
+           )
     }
 
     private fun parseReceiptDate(
