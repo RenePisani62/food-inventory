@@ -37,6 +37,7 @@ fun ReceiptCard(
     theme: RetailerTheme,
     expanded: Boolean,
     onExpandToggle: () -> Unit,
+    onShare: () -> Unit,
     onDelete: () -> Unit,
     selectionMode: Boolean,
     selected: Boolean,
@@ -301,20 +302,34 @@ fun ReceiptCard(
                     modifier = Modifier.height(8.dp)
                 )
 
-                // =================================================
-                // RECEIPT CARD - DELETE RECEIPT
-                // =================================================
+// =================================================
+// RECEIPT CARD - SHARE / DELETE RECEIPT
+// =================================================
 
-                Text(
-                    text = "Delete receipt",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier
-                        .clickable {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+
+                    Text(
+                        text = "Share receipt",
+                        color = theme.headerColor,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.clickable {
+                            onShare()
+                        }
+                    )
+
+                    Text(
+                        text = "Delete receipt",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.clickable {
                             showDeleteDialog.value = true
                         }
-                        .align(Alignment.End)
-                )
+                    )
+                }
 
                 // =================================================
                 // RECEIPT CARD - DELETE CONFIRMATION

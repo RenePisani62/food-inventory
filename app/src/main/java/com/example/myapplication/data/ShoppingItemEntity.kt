@@ -19,6 +19,8 @@ data class ShoppingItemEntity(
 
     val source: String = "MANUAL",
 
+    val quantity: Int = 1,
+
     val created: Long = System.currentTimeMillis(),
 
     val lastModified: Long = System.currentTimeMillis()

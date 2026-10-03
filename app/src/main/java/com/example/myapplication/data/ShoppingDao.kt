@@ -25,10 +25,14 @@ interface ShoppingDao {
     ): ShoppingItemEntity?
 
     @Query("""
-        SELECT *
-        FROM shopping_items
-        ORDER BY checked ASC, description ASC
-    """)
+    SELECT *
+    FROM shopping_items
+    ORDER BY
+        checked ASC,
+        CASE WHEN source = 'MANUAL' THEN 0 ELSE 1 END ASC,
+        CASE WHEN source = 'MANUAL' THEN created END DESC,
+        description ASC
+""")
     suspend fun getAllItems(): List<ShoppingItemEntity>
 
     @Query("""
@@ -40,6 +44,18 @@ interface ShoppingDao {
     suspend fun updateChecked(
         id: Int,
         checked: Boolean,
+        modified: Long
+    )
+
+    @Query("""
+    UPDATE shopping_items
+    SET quantity = :quantity,
+        lastModified = :modified
+    WHERE id = :id
+""")
+    suspend fun updateQuantity(
+        id: Int,
+        quantity: Int,
         modified: Long
     )
 

@@ -183,6 +183,10 @@ class MainActivity : ComponentActivity() {
         mutableStateOf<List<ReceiptEntity>>(emptyList())
     private var shoppingListItems =
         mutableStateOf(mutableListOf<String>())
+
+    private var shoppingListEntities =
+        mutableStateOf<List<ShoppingItemEntity>>(emptyList())
+
     private var showClearReceiptsDialog =
         mutableStateOf(false)
 
@@ -1515,7 +1519,7 @@ class MainActivity : ComponentActivity() {
         intent: Intent?
     ) {
 
-        if (intent?.action != Intent.ACTION_SEND) {
+        if (intent == null) {
             return
         }
 
@@ -1523,25 +1527,39 @@ class MainActivity : ComponentActivity() {
             intent.type ?: return
 
         val sharedUri =
-            if (android.os.Build.VERSION.SDK_INT >=
-                android.os.Build.VERSION_CODES.TIRAMISU
-            ) {
-                intent.getParcelableExtra(
-                    Intent.EXTRA_STREAM,
-                    android.net.Uri::class.java
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra<android.net.Uri>(
-                    Intent.EXTRA_STREAM
-                )
+            when (intent.action) {
+
+                Intent.ACTION_SEND -> {
+
+                    if (android.os.Build.VERSION.SDK_INT >=
+                        android.os.Build.VERSION_CODES.TIRAMISU
+                    ) {
+                        intent.getParcelableExtra(
+                            Intent.EXTRA_STREAM,
+                            android.net.Uri::class.java
+                        )
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra<android.net.Uri>(
+                            Intent.EXTRA_STREAM
+                        )
+                    }
+                }
+
+                Intent.ACTION_VIEW -> {
+                    intent.data
+                }
+
+                else -> {
+                    return
+                }
             }
 
         if (sharedUri == null) {
 
             android.util.Log.e(
                 "PantryPalSHARE",
-                "ACTION_SEND received but no URI was supplied"
+                "${intent.action} received but no URI was supplied"
             )
 
             return
@@ -1549,10 +1567,12 @@ class MainActivity : ComponentActivity() {
 
         android.util.Log.e(
             "PantryPalSHARE",
-            "Received shared receipt | " +
+            "Received receipt | " +
+                    "action=${intent.action} | " +
                     "type=$mimeType | " +
                     "uri=$sharedUri"
         )
+
         when {
 
             mimeType.startsWith("image/") -> {
@@ -1760,10 +1780,48 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
 
-        enableEdgeToEdge()
+        override fun onCreate(savedInstanceState: Bundle?) {
+            super.onCreate(savedInstanceState)
+
+            android.util.Log.e(
+                "PantryPalShareDebug",
+                "ACTION = ${intent?.action}"
+            )
+
+            android.util.Log.e(
+                "PantryPalShareDebug",
+                "TYPE = ${intent?.type}"
+            )
+
+            android.util.Log.e(
+                "PantryPalShareDebug",
+                "DATA = ${intent?.data}"
+            )
+
+            val sharedUri =
+                if (android.os.Build.VERSION.SDK_INT >=
+                    android.os.Build.VERSION_CODES.TIRAMISU
+                ) {
+                    intent?.getParcelableExtra(
+                        android.content.Intent.EXTRA_STREAM,
+                        android.net.Uri::class.java
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent?.getParcelableExtra<android.net.Uri>(
+                        android.content.Intent.EXTRA_STREAM
+                    )
+                }
+
+            android.util.Log.e(
+                "PantryPalShareDebug",
+                "EXTRA_STREAM = $sharedUri"
+            )
+
+            enableEdgeToEdge()
+
+
 
         prefs = getSharedPreferences("pantrypal_prefs", MODE_PRIVATE)
 
@@ -1799,6 +1857,9 @@ class MainActivity : ComponentActivity() {
 
             val shoppingItems =
                 database.shoppingDao().getAllItems()
+
+            shoppingListEntities.value =
+                shoppingItems
 
             shoppingListItems.value =
                 shoppingItems
@@ -5458,6 +5519,9 @@ class MainActivity : ComponentActivity() {
                                     val shoppingItems =
                                         database.shoppingDao().getAllItems()
 
+                                    shoppingListEntities.value =
+                                        shoppingItems
+
                                     shoppingListItems.value =
                                         shoppingItems
                                             .map { it.description }
@@ -5499,6 +5563,12 @@ class MainActivity : ComponentActivity() {
             } else {
 
                 shoppingListItems.value.forEach { item ->
+
+                    val shoppingEntity =
+                        shoppingListEntities.value
+                            .firstOrNull {
+                                it.description == item
+                            }
 
                     val reason =
                         when {
@@ -5571,6 +5641,65 @@ class MainActivity : ComponentActivity() {
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold
                                 )
+
+                                if (shoppingEntity?.source == "MANUAL") {
+
+                                    Spacer(
+                                        modifier = Modifier.height(4.dp)
+                                    )
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+
+                                        OutlinedButton(
+                                            onClick = {
+
+                                                if (shoppingEntity.quantity > 1) {
+
+                                                    lifecycleScope.launch {
+
+                                                        database.shoppingDao().updateQuantity(
+                                                            id = shoppingEntity.id,
+                                                            quantity = shoppingEntity.quantity - 1,
+                                                            modified = System.currentTimeMillis()
+                                                        )
+
+                                                        refreshShoppingList()
+                                                    }
+                                                }
+                                            },
+                                            enabled = shoppingEntity.quantity > 1
+                                        ) {
+                                            Text("−")
+                                        }
+
+                                        Text(
+                                            text = "Qty: ${shoppingEntity.quantity}",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+
+                                        OutlinedButton(
+                                            onClick = {
+
+                                                lifecycleScope.launch {
+
+                                                    database.shoppingDao().updateQuantity(
+                                                        id = shoppingEntity.id,
+                                                        quantity = shoppingEntity.quantity + 1,
+                                                        modified = System.currentTimeMillis()
+                                                    )
+
+                                                    refreshShoppingList()
+                                                }
+                                            }
+                                        ) {
+                                            Text("+")
+                                        }
+                                    }
+                                }
 
                                 if (reason != null) {
 
@@ -5853,6 +5982,12 @@ class MainActivity : ComponentActivity() {
 
                             onExpandToggle = {
                                 expanded = !expanded
+                            },
+                            onShare = {
+                                shareReceipt(
+                                    receipt = receipt,
+                                    receiptProducts = storedReceiptProducts
+                                )
                             },
 
                             onDelete = {
@@ -6237,6 +6372,12 @@ class MainActivity : ComponentActivity() {
                         onExpandToggle = {
                             expanded = !expanded
                         },
+                        onShare = {
+                            shareReceipt(
+                                receipt = receipt,
+                                receiptProducts = storedReceiptProducts
+                            )
+                        },
 
                         onDelete = {
                             // Archived receipts are
@@ -6256,6 +6397,105 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun shareReceipt(
+        receipt: ReceiptEntity,
+        receiptProducts: List<ReceiptItemEntity>
+    ) {
+
+        val retailer =
+            receipt.storeName
+                ?.takeIf { it.isNotBlank() }
+                ?: "Unknown retailer"
+
+        val receiptText =
+            buildString {
+
+                appendLine("PantryPal Receipt")
+                appendLine()
+                appendLine(retailer)
+                appendLine(
+                    "Date: ${receipt.receiptDate ?: "Unknown"}"
+                )
+
+                appendLine(
+                    "Total: ${
+                        receipt.totalAmount
+                            ?.let { "$%.2f".format(it) }
+                            ?: "-"
+                    }"
+                )
+
+                appendLine()
+                appendLine("Items")
+                appendLine()
+
+                receiptProducts.forEach { item ->
+
+                    appendLine(item.productName)
+
+                    val details =
+                        buildList {
+
+                            item.quantity?.let {
+                                add("Qty: $it")
+                            }
+
+                            item.unit?.let {
+                                if (it.isNotBlank()) {
+                                    add(it)
+                                }
+                            }
+                        }
+                            .joinToString(" • ")
+
+                    if (details.isNotBlank()) {
+                        appendLine(details)
+                    }
+
+                    val price =
+                        item.totalPrice
+                            ?.let { "$%.2f".format(it) }
+                            ?: item.unitPrice
+                                ?.let { "$%.2f".format(it) }
+                            ?: ""
+
+                    if (price.isNotBlank()) {
+                        appendLine(price)
+                    }
+
+                    appendLine()
+                }
+
+                appendLine("Shared from PantryPal")
+            }
+
+        val shareIntent =
+            android.content.Intent(
+                android.content.Intent.ACTION_SEND
+            ).apply {
+
+                type = "text/plain"
+
+                putExtra(
+                    android.content.Intent.EXTRA_SUBJECT,
+                    "PantryPal Receipt - $retailer"
+                )
+
+                putExtra(
+                    android.content.Intent.EXTRA_TEXT,
+                    receiptText
+                )
+            }
+
+        startActivity(
+            android.content.Intent.createChooser(
+                shareIntent,
+                "Share receipt"
+            )
+        )
+    }
+
     private fun launchReceiptCamera() {
 
         val photoFile =
@@ -7173,6 +7413,9 @@ class MainActivity : ComponentActivity() {
 
         val shoppingItems =
             database.shoppingDao().getAllItems()
+
+        shoppingListEntities.value =
+            shoppingItems
 
         shoppingListItems.value =
             shoppingItems

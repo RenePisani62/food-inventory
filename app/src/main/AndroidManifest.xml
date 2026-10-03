@@ -35,6 +35,15 @@
                 <data android:mimeType="application/pdf" />
             </intent-filter>
 
+            <!-- Allow PDF receipts opened from other apps to be handled by PantryPal -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="application/pdf" />
+            </intent-filter>
+
             <!-- Allow receipt images to be shared directly to PantryPal -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

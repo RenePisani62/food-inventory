@@ -63,6 +63,13 @@ object ColesReceiptParser {
         rawText: String
     ): List<ParsedReceiptItem> {
 
+        android.util.Log.e(
+            "ColesOnlineRAW",
+            "========== COLES RAW TEXT START ==========\n" +
+                    rawText +
+                    "\n========== COLES RAW TEXT END =========="
+        )
+
         val lines =
             rawText
                 .lines()
