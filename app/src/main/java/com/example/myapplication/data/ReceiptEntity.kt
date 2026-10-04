@@ -21,5 +21,9 @@ data class ReceiptEntity(
 
     val fingerprint: String? = null,
 
+    // Retailer's authoritative item count where available.
+    // Null for historical receipts or formats that do not provide one.
+    val itemCount: Int? = null,
+
     val createdAt: Long = System.currentTimeMillis()
 )

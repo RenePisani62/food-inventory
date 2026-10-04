@@ -534,8 +534,12 @@ class MainActivity : ComponentActivity() {
                             parsedReceipt.receiptNumber,
 
                         fingerprint =
-                            fingerprint
-                    )
+                            fingerprint,
+
+                        itemCount =
+                            parsedReceipt.itemCount
+
+                            )
 
                 val receiptId =
                     database
@@ -1286,7 +1290,10 @@ class MainActivity : ComponentActivity() {
                                             parsedReceipt.receiptNumber,
 
                                         fingerprint =
-                                            fingerprint
+                                            fingerprint,
+
+                                        itemCount =
+                                            parsedReceipt.itemCount
                                     )
 
                                 val receiptId =

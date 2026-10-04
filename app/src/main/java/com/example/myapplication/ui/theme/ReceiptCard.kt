@@ -59,6 +59,9 @@ fun ReceiptCard(
     val structuredItemCount =
         receiptProducts.size
 
+    val receiptItemCount =
+        receipt.itemCount ?: structuredItemCount
+
     // ============================================================
     // RECEIPT CARD - MAIN CARD
     // ============================================================
@@ -177,7 +180,7 @@ fun ReceiptCard(
                     )
 
                     Text(
-                        text = "Items: $structuredItemCount"
+                        text = "Items: $receiptItemCount"
                     )
                 }
 

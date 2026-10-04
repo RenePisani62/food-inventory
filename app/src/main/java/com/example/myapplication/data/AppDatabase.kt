@@ -18,7 +18,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProductLocationPreferenceEntity::class,
         ProductCategoryPreferenceEntity::class
     ],
-    version = 14
+    version = 15
 )
 
 abstract class AppDatabase : RoomDatabase() {
@@ -146,6 +146,22 @@ abstract class AppDatabase : RoomDatabase() {
                 }
             }
 
+        private val MIGRATION_14_15 =
+            object : Migration(14, 15) {
+
+                override fun migrate(
+                    db: SupportSQLiteDatabase
+                ) {
+
+                    db.execSQL(
+                        """
+                ALTER TABLE receipts
+                ADD COLUMN itemCount INTEGER
+                """.trimIndent()
+                    )
+                }
+            }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -166,7 +182,8 @@ abstract class AppDatabase : RoomDatabase() {
                             MIGRATION_10_11,
                             MIGRATION_11_12,
                             MIGRATION_12_13,
-                            MIGRATION_13_14
+                            MIGRATION_13_14,
+                            MIGRATION_14_15
                         )
                         .fallbackToDestructiveMigration()
                         .build()
