@@ -415,6 +415,49 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    private val receiptDocumentScannerLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.StartIntentSenderForResult()
+        ) { result ->
+
+            if (result.resultCode == RESULT_OK) {
+
+                val scanResult =
+                    com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
+                        .fromActivityResultIntent(result.data)
+
+                val imageUri =
+                    scanResult
+                        ?.pages
+                        ?.firstOrNull()
+                        ?.imageUri
+
+                if (imageUri != null) {
+
+                    processReceiptOcr(imageUri)
+
+                    android.util.Log.e(
+                        "PantryPalScanner",
+                        "Document Scanner capture successful: $imageUri"
+                    )
+
+                } else {
+
+                    android.util.Log.e(
+                        "PantryPalScanner",
+                        "Document Scanner returned no image"
+                    )
+                }
+
+            } else {
+
+                android.util.Log.e(
+                    "PantryPalScanner",
+                    "Document Scanner cancelled"
+                )
+            }
+        }
+
     // ============================================================
     // OCR TEST - SELECT RECEIPT IMAGE
     // ============================================================
@@ -3833,25 +3876,10 @@ class MainActivity : ComponentActivity() {
 
                                     showReceiptImportOptions = false
 
-                                    if (
-                                        androidx.core.content.ContextCompat
-                                            .checkSelfPermission(
-                                                this@MainActivity,
-                                                android.Manifest.permission.CAMERA
-                                            ) ==
-                                        android.content.pm.PackageManager.PERMISSION_GRANTED
-                                    ) {
-
-                                        launchReceiptCamera()
-
-                                    } else {
-
-                                        receiptCameraPermissionLauncher.launch(
-                                            android.Manifest.permission.CAMERA
-                                        )
-                                    }
+                                    launchReceiptDocumentScanner()
                                 },
-                                modifier = Modifier.fillMaxWidth()
+
+                                  modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text("📷  Scan Paper Receipt")
                             }
@@ -6525,6 +6553,52 @@ class MainActivity : ComponentActivity() {
         receiptCameraLauncher.launch(
             photoUri
         )
+    }
+
+    private fun launchReceiptDocumentScanner() {
+
+        val options =
+            com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
+                .Builder()
+                .setGalleryImportAllowed(false)
+                .setPageLimit(1)
+                .setResultFormats(
+                    com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions.RESULT_FORMAT_JPEG
+                )
+                .setScannerMode(
+                    com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions.SCANNER_MODE_FULL
+                )
+                .build()
+
+        val scanner =
+            com.google.mlkit.vision.documentscanner.GmsDocumentScanning
+                .getClient(options)
+
+        scanner
+            .getStartScanIntent(this)
+            .addOnSuccessListener { intentSender ->
+
+                val request =
+                    androidx.activity.result.IntentSenderRequest
+                        .Builder(intentSender)
+                        .build()
+
+                receiptDocumentScannerLauncher.launch(request)
+            }
+            .addOnFailureListener { exception ->
+
+                android.util.Log.e(
+                    "PantryPalScanner",
+                    "Unable to launch Document Scanner",
+                    exception
+                )
+
+                Toast.makeText(
+                    this,
+                    "Unable to start receipt scanner.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
     }
 
     @Composable
