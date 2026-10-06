@@ -25,5 +25,10 @@ data class ReceiptEntity(
     // Null for historical receipts or formats that do not provide one.
     val itemCount: Int? = null,
 
+// How the purchase was received.
+// Expected values: IN_STORE, CLICK_AND_COLLECT, DELIVERY.
+// Null for historical receipts where the source is unknown.
+    val receiptSource: String? = null,
+
     val createdAt: Long = System.currentTimeMillis()
 )

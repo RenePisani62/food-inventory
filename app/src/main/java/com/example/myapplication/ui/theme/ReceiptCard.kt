@@ -157,9 +157,42 @@ fun ReceiptCard(
                 modifier = Modifier.height(8.dp)
             )
 
-            // ====================================================
-            // RECEIPT CARD - ITEM COUNT AND TOTAL
-            // ====================================================
+// ====================================================
+// RECEIPT CARD - RECEIPT SOURCE
+// ====================================================
+
+            val receiptSourceLabel =
+                when (receipt.receiptSource) {
+
+                    "IN_STORE" ->
+                        "In-store"
+
+                    "CLICK_AND_COLLECT" ->
+                        "Click & Collect"
+
+                    "DELIVERY" ->
+                        "Delivery"
+
+                    else ->
+                        null
+                }
+
+            if (receiptSourceLabel != null) {
+
+                Text(
+                    text = receiptSourceLabel,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = theme.headerColor
+                )
+
+                Spacer(
+                    modifier = Modifier.height(8.dp)
+                )
+            }
+
+// ====================================================
+// RECEIPT CARD - ITEM COUNT AND TOTAL
+// ====================================================
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

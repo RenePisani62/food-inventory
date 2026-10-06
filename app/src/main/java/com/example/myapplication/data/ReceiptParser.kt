@@ -106,6 +106,8 @@ object ReceiptParser {
 
             products = extractProducts(rawText),
 
+            receiptSource = detectReceiptSource(rawText),
+
             structuredItems = structuredItems,
 
             adjustments = adjustments
@@ -125,6 +127,24 @@ object ReceiptParser {
 
             else -> "Unknown"
 
+        }
+    }
+
+    fun detectReceiptSource(rawText: String): String? {
+
+        val text = rawText.lowercase()
+
+        return when {
+
+            "click & collect" in text ||
+                    "click and collect" in text ->
+                "CLICK_AND_COLLECT"
+
+            "delivery" in text ->
+                "DELIVERY"
+
+            else ->
+                "IN_STORE"
         }
     }
     fun extractReceiptDate(rawText: String): String? {

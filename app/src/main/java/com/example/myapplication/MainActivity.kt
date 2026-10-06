@@ -580,7 +580,10 @@ class MainActivity : ComponentActivity() {
                             fingerprint,
 
                         itemCount =
-                            parsedReceipt.itemCount
+                            parsedReceipt.itemCount,
+
+                        receiptSource =
+                            parsedReceipt.receiptSource
 
                             )
 
@@ -1336,7 +1339,10 @@ class MainActivity : ComponentActivity() {
                                             fingerprint,
 
                                         itemCount =
-                                            parsedReceipt.itemCount
+                                            parsedReceipt.itemCount,
+
+                                        receiptSource =
+                                            parsedReceipt.receiptSource ?: "IN_STORE"
                                     )
 
                                 val receiptId =
@@ -5764,10 +5770,32 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+
                     Spacer(
                         modifier = Modifier.height(8.dp)
                     )
                 }
+            }
+
+// ============================================================
+// SHOPPING LIST - SHARE SELECTED
+// ============================================================
+
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
+
+            Button(
+                onClick = {
+                    shareSelectedShoppingItems()
+                },
+                enabled =
+                    checkedShoppingItems.value.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "Share Selected"
+                )
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -6817,24 +6845,41 @@ class MainActivity : ComponentActivity() {
         }
         barcodeLauncher.launch(options)
     }
-    private fun copyShoppingListToClipboard() {
+    private fun shareSelectedShoppingItems() {
 
-        val clipboard =
-            getSystemService(Context.CLIPBOARD_SERVICE)
-                    as ClipboardManager
+        if (checkedShoppingItems.value.isEmpty()) {
 
-        val clip = ClipData.newPlainText(
-            "PantryPal Shopping List",
-            buildShoppingListText()
+            Toast.makeText(
+                this,
+                "Select at least one shopping item.",
+                Toast.LENGTH_SHORT
+            ).show()
+
+            return
+        }
+
+        val shareIntent =
+            Intent(Intent.ACTION_SEND).apply {
+
+                type = "text/plain"
+
+                putExtra(
+                    Intent.EXTRA_SUBJECT,
+                    "PantryPal Shopping List"
+                )
+
+                putExtra(
+                    Intent.EXTRA_TEXT,
+                    buildShoppingListText()
+                )
+            }
+
+        startActivity(
+            Intent.createChooser(
+                shareIntent,
+                "Share shopping list"
+            )
         )
-
-        clipboard.setPrimaryClip(clip)
-
-        Toast.makeText(
-            this,
-            "Shopping list copied",
-            Toast.LENGTH_SHORT
-        ).show()
     }
     private val categoryExpiryDays = mapOf(
         "Pantry Dry Goods" to 180,
@@ -6965,16 +7010,59 @@ class MainActivity : ComponentActivity() {
 
             append("PantryPal Shopping List\n\n")
 
-            shoppingListItems.value.forEach { item ->
-
-                val checked =
+            shoppingListItems.value
+                .filter { item ->
                     checkedShoppingItems.value.contains(item)
+                }
+                .forEach { item ->
 
-                val marker =
-                    if (checked) "☑" else "☐"
+                    val shoppingEntity =
+                        shoppingListEntities.value
+                            .firstOrNull {
+                                it.description == item
+                            }
 
-                append("$marker $item\n")
-            }
+                    val reason =
+                        when {
+                            item.endsWith("— Out of stock") ->
+                                "Out of stock"
+
+                            item.endsWith("— Expiring soon") ->
+                                "Expiring soon"
+
+                            item.endsWith("— Expired") ->
+                                "Expired"
+
+                            else ->
+                                null
+                        }
+
+                    val productName =
+                        when (reason) {
+                            "Out of stock" ->
+                                item.removeSuffix("— Out of stock").trim()
+
+                            "Expiring soon" ->
+                                item.removeSuffix("— Expiring soon").trim()
+
+                            "Expired" ->
+                                item.removeSuffix("— Expired").trim()
+
+                            else ->
+                                item
+                        }
+
+                    val quantity =
+                        shoppingEntity?.quantity ?: 1
+
+                    append(
+                        "$productName — Qty: $quantity\n"
+                    )
+                }
+
+
+
+            append("\nShared from PantryPal")
         }
     }
     private fun applySuggestedExpiryDate() {

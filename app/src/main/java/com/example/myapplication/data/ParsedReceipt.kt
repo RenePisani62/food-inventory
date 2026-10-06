@@ -14,6 +14,11 @@ data class ParsedReceipt(
 
     val products: List<String>,
 
+// How the purchase was received.
+// Expected values: IN_STORE, CLICK_AND_COLLECT, DELIVERY.
+// Null when the source has not yet been determined.
+    val receiptSource: String? = null,
+
     val structuredItems: List<ParsedReceiptItem> = emptyList(),
 
     val adjustments: List<ParsedReceiptAdjustment> = emptyList()
