@@ -27,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.foundation.combinedClickable
 
 
 
@@ -37,6 +38,7 @@ fun ReceiptCard(
     theme: RetailerTheme,
     expanded: Boolean,
     onExpandToggle: () -> Unit,
+    onLongPress: () -> Unit = {},
     onShare: () -> Unit,
     onDelete: () -> Unit,
     selectionMode: Boolean,
@@ -73,6 +75,18 @@ fun ReceiptCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp)
+            .combinedClickable(
+                onClick = {
+                    if (selectionMode) {
+                        onSelectionChange(!selected)
+                    } else {
+                        onExpandToggle()
+                    }
+                },
+                onLongClick = {
+                    onLongPress()
+                }
+            )
     ) {
 
         Column(

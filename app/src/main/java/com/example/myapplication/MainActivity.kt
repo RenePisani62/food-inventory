@@ -6015,11 +6015,9 @@ class MainActivity : ComponentActivity() {
                             )
                         }
 
-                        var expanded by remember {
-
-                            mutableStateOf(false)
-
-                        }
+                    var expanded by remember(receipt.id) {
+                        mutableStateOf(false)
+                    }
                         val theme =
                             RetailerThemeResolver.getTheme(receipt.storeName)
 
@@ -6044,8 +6042,30 @@ class MainActivity : ComponentActivity() {
                             expanded = expanded,
 
                             onExpandToggle = {
-                                expanded = !expanded
+
+                                if (receiptSelectionMode.value) {
+
+                                    selectedReceiptIds.value =
+                                        if (selectedReceiptIds.value.contains(receipt.id)) {
+                                            selectedReceiptIds.value - receipt.id
+                                        } else {
+                                            selectedReceiptIds.value + receipt.id
+                                        }
+
+                                } else {
+
+                                    expanded = !expanded
+                                }
                             },
+
+                            onLongPress = {
+
+                                receiptSelectionMode.value = true
+
+                                selectedReceiptIds.value =
+                                    selectedReceiptIds.value + receipt.id
+                            },
+
                             onShare = {
                                 shareReceipt(
                                     receipt = receipt,
@@ -6435,6 +6455,7 @@ class MainActivity : ComponentActivity() {
                         onExpandToggle = {
                             expanded = !expanded
                         },
+
                         onShare = {
                             shareReceipt(
                                 receipt = receipt,
