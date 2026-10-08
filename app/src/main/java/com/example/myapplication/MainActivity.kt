@@ -129,6 +129,22 @@ class MainActivity : ComponentActivity() {
     private var checkedShoppingItems =
         mutableStateOf<Set<String>>(emptySet())
 
+    // ============================================================
+// GOOGLE PLAY BILLING
+// ============================================================
+
+    private lateinit var billingManager: BillingManager
+
+    // ============================================================
+// PRO ENTITLEMENT - DEVELOPMENT ONLY
+// ============================================================
+
+// Temporary switch for testing Free and Pro behaviour.
+// Replace with verified Google Play purchase entitlement
+// before production release.
+
+    private val isProUser = mutableStateOf(false)
+
     private var quickScanMode =
         mutableStateOf(false)
 
@@ -1836,9 +1852,42 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ============================================================
+// GOOGLE PLAY BILLING - LIFECYCLE CLEANUP
+// ============================================================
+
+    override fun onDestroy() {
+        if (::billingManager.isInitialized) {
+            billingManager.disconnect()
+        }
+
+        super.onDestroy()
+    }
+
 
         override fun onCreate(savedInstanceState: Bundle?) {
             super.onCreate(savedInstanceState)
+
+            // ============================================================
+// GOOGLE PLAY BILLING - CONNECTION TEST
+// ============================================================
+
+            billingManager = BillingManager(this)
+
+            billingManager.connect(
+                onConnected = {
+                    android.util.Log.d(
+                        "PantryPalBilling",
+                        "Google Play Billing connected successfully"
+                    )
+                },
+                onError = { error ->
+                    android.util.Log.e(
+                        "PantryPalBilling",
+                        error
+                    )
+                }
+            )
 
             android.util.Log.e(
                 "PantryPalShareDebug",
@@ -1964,8 +2013,13 @@ class MainActivity : ComponentActivity() {
                             "ARCHIVED_RECEIPTS" ->
                                 ArchivedReceiptScreen()
 
-                            "ANALYTICS" ->
-                                AnalyticsScreen()
+                            "ANALYTICS" -> {
+                                if (isProUser.value) {
+                                    AnalyticsScreen()
+                                } else {
+                                    ProUpgradeScreen()
+                                }
+                            }
 
                             "IMPORT_REVIEW" ->
                                 ImportReviewScreen()
@@ -2853,6 +2907,69 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.height(8.dp)
                 )
             }
+        }
+    }
+
+    // ============================================================
+// PRO UPGRADE SCREEN
+// ============================================================
+
+    @Composable
+    fun ProUpgradeScreen() {
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+
+            Text(
+                text = "PantryPal Pro",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "Unlock advanced household spending insights.",
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text(
+                text = "Pro includes:\n\n" +
+                        "• Monthly spending analytics\n" +
+                        "• Retailer comparisons\n" +
+                        "• Product price trends\n" +
+                        "• Advanced spending reports",
+                style = MaterialTheme.typography.bodyMedium
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Button(
+                onClick = {
+                    // Google Play Billing integration will go here.
+                },
+                enabled = false,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Upgrade to Pro")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = "Pro purchasing will be available soon.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
         }
     }
 
@@ -6042,20 +6159,7 @@ class MainActivity : ComponentActivity() {
                             expanded = expanded,
 
                             onExpandToggle = {
-
-                                if (receiptSelectionMode.value) {
-
-                                    selectedReceiptIds.value =
-                                        if (selectedReceiptIds.value.contains(receipt.id)) {
-                                            selectedReceiptIds.value - receipt.id
-                                        } else {
-                                            selectedReceiptIds.value + receipt.id
-                                        }
-
-                                } else {
-
-                                    expanded = !expanded
-                                }
+                                expanded = !expanded
                             },
 
                             onLongPress = {

@@ -66,4 +66,7 @@ dependencies {
     // ML Kit - bundled Latin text recognition for receipt OCR
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
+
+    // Google Play Billing - one-time Pro upgrade
+    implementation("com.android.billingclient:billing-ktx:9.1.0")
 }
