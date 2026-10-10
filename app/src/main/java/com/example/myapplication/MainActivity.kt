@@ -1872,15 +1872,54 @@ class MainActivity : ComponentActivity() {
 // GOOGLE PLAY BILLING - CONNECTION TEST
 // ============================================================
 
+            // ============================================================
+// GOOGLE PLAY BILLING - CONNECTION AND PRODUCT CHECKS
+// ============================================================
+
             billingManager = BillingManager(this)
 
             billingManager.connect(
                 onConnected = {
+
                     android.util.Log.d(
                         "PantryPalBilling",
                         "Google Play Billing connected successfully"
                     )
+
+                    // QUERY GOOGLE PLAY FOR PANTRYPAL PRO
+                    billingManager.queryProProduct(
+                        onResult = { result ->
+                            android.util.Log.d(
+                                "PantryPalBilling",
+                                result
+                            )
+                        },
+                        onError = { error ->
+                            android.util.Log.e(
+                                "PantryPalBilling",
+                                error
+                            )
+                        }
+                    )
+
+                    // CHECK WHETHER PRO IS ALREADY OWNED
+                    billingManager.checkProEntitlement(
+                        onResult = { ownsPro ->
+                            android.util.Log.d(
+                                "PantryPalBilling",
+                                "Existing Pro entitlement: $ownsPro"
+                            )
+                        },
+                        onError = { error ->
+                            android.util.Log.e(
+                                "PantryPalBilling",
+                                error
+                            )
+                        }
+                    )
                 },
+
+                // BILLING CONNECTION ERROR HANDLER
                 onError = { error ->
                     android.util.Log.e(
                         "PantryPalBilling",
@@ -2017,9 +2056,22 @@ class MainActivity : ComponentActivity() {
                                 if (isProUser.value) {
                                     AnalyticsScreen()
                                 } else {
-                                    ProUpgradeScreen()
+                                    ProUpgradeScreen(
+                                        onUpgradeClick = {
+                                            billingManager.launchProPurchase(
+                                                activity = this@MainActivity,
+                                                onError = { error ->
+                                                    android.util.Log.e(
+                                                        "PantryPalBilling",
+                                                        error
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    )
                                 }
                             }
+
 
                             "IMPORT_REVIEW" ->
                                 ImportReviewScreen()
@@ -2915,7 +2967,9 @@ class MainActivity : ComponentActivity() {
 // ============================================================
 
     @Composable
-    fun ProUpgradeScreen() {
+    fun ProUpgradeScreen(
+        onUpgradeClick: () -> Unit
+    ) {
 
         Column(
             modifier = Modifier
@@ -2953,10 +3007,8 @@ class MainActivity : ComponentActivity() {
             Spacer(modifier = Modifier.height(32.dp))
 
             Button(
-                onClick = {
-                    // Google Play Billing integration will go here.
-                },
-                enabled = false,
+                onClick = onUpgradeClick,
+                enabled = true,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Upgrade to Pro")
