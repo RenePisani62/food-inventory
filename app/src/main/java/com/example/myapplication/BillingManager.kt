@@ -13,17 +13,26 @@ import com.android.billingclient.api.AcknowledgePurchaseParams
 import com.android.billingclient.api.BillingClient.BillingResponseCode
 import android.app.Activity
 import com.android.billingclient.api.BillingFlowParams
+import android.util.Base64
+import java.security.KeyFactory
+import java.security.Signature
+import java.security.spec.X509EncodedKeySpec
 
 // ============================================================
 // GOOGLE PLAY BILLING MANAGER
 // ============================================================
 
 class BillingManager(
-    context: Context
+    context: Context,
+    private val onProPurchased: () -> Unit
 ) {
 
     companion object {
         const val PRO_PRODUCT_ID = "pantrypal_pro"
+
+        // Paste the Base64 RSA public license key from Play Console here.
+        // Until configured, purchase validation fails closed.
+        private const val PLAY_LICENSE_PUBLIC_KEY = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxXQ0F06gz6ea4dT7aQCBHz5lUE7UJYHcWzFJhVDSDj3ls8vPQSA4ZHQZscoT6melBG8hVBXmhYlnPqRehbLvk7pKTJdJ1c6oXhO7M5QVaTglLnGsK4184VYumsEyUyJOizOIx3OlUcgNK3oyTtUnoLPXJMk078NsDuWIroPYgg1/N0rfebMhC6nCfMqojnCtOSAI5Nq0XlXXzm7EP2/oiNp+W3PvW+ob2axnRhraRUTyOOOwIKdh7Y+OsvB5F9Af4lYjQxOMd2t3PxI2HrvmPhWoRurJKubVbFEquxGU0VssEOsSReRQGaxevaTL+uDkBASdo2FXbTvX1Ylw3MFnQwIDAQAB"
     }
 
     // ============================================================
@@ -168,29 +177,53 @@ class BillingManager(
         onResult: (Boolean) -> Unit,
         onError: (String) -> Unit
     ) {
-
         val params = QueryPurchasesParams.newBuilder()
             .setProductType(BillingClient.ProductType.INAPP)
             .build()
 
-        billingClient.queryPurchasesAsync(params) {
-                billingResult, purchases ->
-
-            if (billingResult.responseCode !=
-                BillingClient.BillingResponseCode.OK
-            ) {
-                onError(
-                    "Purchase query failed: ${billingResult.debugMessage}"
-                )
+        billingClient.queryPurchasesAsync(params) { billingResult, purchases ->
+            if (billingResult.responseCode != BillingResponseCode.OK) {
+                onError("Purchase query failed: ${billingResult.debugMessage}")
                 return@queryPurchasesAsync
             }
 
-            val ownsPro = purchases.any { purchase ->
+            val validPurchases = purchases.filter { purchase ->
                 purchase.products.contains(PRO_PRODUCT_ID) &&
-                        purchase.purchaseState == Purchase.PurchaseState.PURCHASED
+                    purchase.purchaseState == Purchase.PurchaseState.PURCHASED &&
+                    verifyPurchaseSignature(purchase)
             }
 
-            onResult(ownsPro)
+            if (validPurchases.isEmpty()) {
+                onResult(false)
+                return@queryPurchasesAsync
+            }
+
+            // A restored purchase must also be acknowledged, if necessary.
+            acknowledgeProPurchase(
+                validPurchases.first(),
+                onSuccess = { onResult(true) },
+                onError = onError
+            )
+        }
+    }
+
+    private fun verifyPurchaseSignature(purchase: Purchase): Boolean {
+        if (PLAY_LICENSE_PUBLIC_KEY == "REPLACE_WITH_PLAY_CONSOLE_LICENSE_KEY") {
+            android.util.Log.e("PantryPalBilling", "Play license public key is not configured")
+            return false
+        }
+
+        return try {
+            val keyBytes = Base64.decode(PLAY_LICENSE_PUBLIC_KEY, Base64.DEFAULT)
+            val publicKey = KeyFactory.getInstance("RSA")
+                .generatePublic(X509EncodedKeySpec(keyBytes))
+            val verifier = Signature.getInstance("SHA1withRSA")
+            verifier.initVerify(publicKey)
+            verifier.update(purchase.originalJson.toByteArray(Charsets.UTF_8))
+            verifier.verify(Base64.decode(purchase.signature, Base64.DEFAULT))
+        } catch (exception: Exception) {
+            android.util.Log.e("PantryPalBilling", "Purchase signature verification failed", exception)
+            false
         }
     }
 
@@ -315,6 +348,13 @@ class BillingManager(
                         flowParams
                     )
 
+                android.util.Log.d(
+                    "PantryPalBilling",
+                    "launchBillingFlow result: " +
+                            "code=${result.responseCode}, " +
+                            "message=${result.debugMessage}"
+                )
+
                 if (result.responseCode != BillingResponseCode.OK) {
                     onError(
                         "Unable to start purchase: " +
@@ -330,45 +370,37 @@ class BillingManager(
 // ============================================================
 
     private fun processProPurchase(purchase: Purchase) {
-
-        if (!purchase.products.contains(PRO_PRODUCT_ID)) {
-            return
-        }
+        if (!purchase.products.contains(PRO_PRODUCT_ID)) return
 
         when (purchase.purchaseState) {
-
             Purchase.PurchaseState.PURCHASED -> {
+                if (!verifyPurchaseSignature(purchase)) {
+                    android.util.Log.e("PantryPalBilling", "Unverified Pro purchase; access denied")
+                    return
+                }
 
-                android.util.Log.d(
-                    "PantryPalBilling",
-                    "Completed Pro purchase received"
+                acknowledgeProPurchase(
+                    purchase = purchase,
+                    onSuccess = {
+                        android.util.Log.d("PantryPalBilling", "Verified Pro purchase acknowledged")
+                        onProPurchased()
+                    },
+                    onError = { error ->
+                        android.util.Log.e("PantryPalBilling", error)
+                    }
                 )
-
-                // IMPORTANT:
-                // Verification must be completed before
-                // acknowledgement or Pro entitlement activation.
-                //
-                // This function deliberately does not grant
-                // Pro access or acknowledge the purchase yet.
             }
 
             Purchase.PurchaseState.PENDING -> {
-
-                android.util.Log.d(
-                    "PantryPalBilling",
-                    "Pro purchase awaiting payment"
-                )
+                android.util.Log.d("PantryPalBilling", "Pro payment pending; access not granted")
             }
 
             else -> {
-
-                android.util.Log.d(
-                    "PantryPalBilling",
-                    "Pro purchase not completed"
-                )
+                android.util.Log.d("PantryPalBilling", "Pro purchase not completed")
             }
         }
     }
+
     fun disconnect() {
         billingClient.endConnection()
     }

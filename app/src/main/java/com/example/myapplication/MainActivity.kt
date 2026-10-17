@@ -571,185 +571,36 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
 
+
                 // ============================================================
-                // RECEIPT IMPORT - SAVE RECEIPT AND ITEMS
+                // PDF IMPORT - PREPARE REVIEW WITHOUT SAVING
                 // ============================================================
 
-                val receipt =
-                    ReceiptEntity(
-                        storeName =
-                            parsedReceipt.storeName,
+                importedItemsForReview.value =
+                    parsedReceipt.structuredItems.map { item ->
 
-                        receiptDate =
-                            parsedReceipt.receiptDate,
+                        ImportReviewItem(
+                            productName = item.name,
+                            location = resolveStorageLocation(item.name),
+                            category = resolveHouseholdCategory(item.name),
+                            quantity = item.quantity,
+                            unit = item.unit,
+                            unitPrice = item.unitPrice,
+                            totalPrice = item.totalPrice,
+                            receiptDate = parsedReceipt.receiptDate
+                        )
+                    }
 
-                        totalAmount =
-                            parsedReceipt.totalAmount,
 
-                        rawText =
-                            text,
+                reviewReceiptDate.value =
+                    parsedReceipt.receiptDate.orEmpty()
 
-                        receiptNumber =
-                            parsedReceipt.receiptNumber,
 
-                        fingerprint =
-                            fingerprint,
+                pendingOcrReceipt.value = parsedReceipt
+                pendingOcrRawText.value = text
 
-                        itemCount =
-                            parsedReceipt.itemCount,
+                currentScreen.value = "IMPORT_REVIEW"
 
-                        receiptSource =
-                            parsedReceipt.receiptSource
-
-                            )
-
-                val receiptId =
-                    database
-                        .receiptDao()
-                        .insertReceipt(receipt)
-
-                lastImportedReceiptId.longValue =
-                    receiptId
-
-                if (
-                    parsedReceipt
-                        .structuredItems
-                        .isNotEmpty()
-                ) {
-
-                    val entities =
-                        parsedReceipt
-                            .structuredItems
-                            .map { item ->
-
-                                ReceiptItemEntity(
-                                    receiptId =
-                                        receiptId,
-
-                                    retailer =
-                                        parsedReceipt.storeName,
-
-                                    receiptDate =
-                                        parsedReceipt.receiptDate,
-
-                                    productName =
-                                        item.name,
-
-                                    quantity =
-                                        item.quantity,
-
-                                    unit =
-                                        item.unit,
-
-                                    unitPrice =
-                                        item.unitPrice,
-
-                                    totalPrice =
-                                        item.totalPrice
-                                )
-                            }
-
-                    database
-                        .receiptItemDao()
-                        .insertAll(entities)
-
-                    android.util.Log.e(
-                        "HouseholdCategoryDebug",
-                        "IMPORT TEST: retailer=${parsedReceipt.storeName}, " +
-                                "products=${parsedReceipt.products.size}, " +
-                                "structuredItems=${parsedReceipt.structuredItems.size}"
-                    )
-
-                    // ========================================================
-                    // RECEIPT IMPORT - UPDATE INVENTORY
-                    // ========================================================
-
-                    parsedReceipt
-                        .structuredItems
-                        .forEach { item ->
-
-                            val householdCategory =
-                                resolveHouseholdCategory(
-                                    item.name
-                                )
-
-                            // Temporary logging
-                            android.util.Log.e(
-                                "HouseholdCategoryDebug",
-                                "COLES TEST: ${item.name} -> $householdCategory"
-                            )
-
-                            if (
-                                householdCategory ==
-                                HouseholdCategory.FOOD
-                            ) {
-
-                                val inventoryQuantity =
-                                    when {
-
-                                        item.unit == "kg" ->
-                                            1
-
-                                        item.quantity != null ->
-                                            item.quantity
-                                                .toInt()
-                                                .coerceAtLeast(1)
-
-                                        else ->
-                                            1
-                                    }
-
-                                val purchaseDate =
-                                    parsedReceipt
-                                        .receiptDate
-                                        ?.let { dateText ->
-
-                                            runCatching {
-
-                                                LocalDate.parse(
-                                                    dateText,
-                                                    java.time.format
-                                                        .DateTimeFormatter
-                                                        .ofPattern(
-                                                            "d MMM yyyy"
-                                                        )
-                                                )
-
-                                            }.getOrNull()
-                                        }
-
-                                addOrUpdateInventoryItem(
-                                    productName =
-                                        item.name,
-
-                                    quantity =
-                                        inventoryQuantity,
-
-                                    barcode =
-                                        "",
-
-                                    purchaseDate =
-                                        purchaseDate
-                                )
-                            }
-                        }
-
-                    showImportReview.value =
-                        true
-                }
-
-                refreshProducts()
-
-                expirySummary.value =
-                    getExpirySummary()
-
-                refreshReceipts()
-
-                Toast.makeText(
-                    this@MainActivity,
-                    "Receipt imported successfully.",
-                    Toast.LENGTH_LONG
-                ).show()
 
             } catch (e: Exception) {
 
@@ -861,6 +712,177 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun ImportReviewScreen() {
 
+
+        // ============================================================
+        // IMPORT REVIEW - LIVE RECOGNISED PRODUCT TOTAL
+        // ============================================================
+
+        val recognisedProductTotal =
+            importedItemsForReview.value.sumOf { item ->
+                item.totalPrice
+                    ?: item.unitPrice?.let { unitPrice ->
+                        unitPrice * (item.quantity ?: 1.0)
+                    }
+                    ?: 0.0
+            }
+
+
+        if (showAddReviewProductDialog.value) {
+
+            AlertDialog(
+                onDismissRequest = {
+                    showAddReviewProductDialog.value = false
+                },
+                title = {
+                    Text("Add Missing Product")
+                },
+                text = {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+
+                        OutlinedTextField(
+                            value = newReviewProductName.value,
+                            onValueChange = {
+                                newReviewProductName.value = it
+                            },
+                            label = { Text("Product name") },
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = newReviewProductQuantity.value,
+                            onValueChange = {
+                                newReviewProductQuantity.value = it
+                            },
+                            label = { Text("Quantity") },
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = newReviewProductPrice.value,
+                            onValueChange = {
+                                newReviewProductPrice.value = it
+                            },
+                            label = { Text("Total price ($)") },
+                            singleLine = true
+                        )
+
+                        Text("Category")
+
+                        Row(
+                            horizontalArrangement =
+                                Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                "Food" to HouseholdCategory.FOOD,
+                                "Non-food" to HouseholdCategory.OTHER
+                            ).forEach { (label, category) ->
+                                FilterChip(
+                                    selected =
+                                        newReviewProductCategory.value == category,
+                                    onClick = {
+                                        newReviewProductCategory.value = category
+                                    },
+                                    label = { Text(label) }
+                                )
+                            }
+                        }
+
+                        Text("Storage location")
+
+                        Row(
+                            horizontalArrangement =
+                                Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                "Pantry",
+                                "Fridge",
+                                "Freezer"
+                            ).forEach { location ->
+                                FilterChip(
+                                    selected =
+                                        newReviewProductLocation.value == location,
+                                    onClick = {
+                                        newReviewProductLocation.value = location
+                                    },
+                                    label = { Text(location) }
+                                )
+                            }
+                        }
+                    }
+                },
+
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val name =
+                                newReviewProductName.value.trim()
+
+                            val quantity =
+                                newReviewProductQuantity.value
+                                    .trim()
+                                    .toDoubleOrNull()
+
+                            val price =
+                                newReviewProductPrice.value
+                                    .trim()
+                                    .toDoubleOrNull()
+
+                            if (
+                                name.isNotEmpty() &&
+                                quantity != null &&
+                                quantity > 0.0 &&
+                                price != null &&
+                                price >= 0.0
+                            ) {
+                                val newItem = ImportReviewItem(
+                                    productName = name,
+                                    location =
+                                        newReviewProductLocation.value,
+                                    category =
+                                        newReviewProductCategory.value,
+                                    quantity = quantity,
+                                    unit = null,
+                                    unitPrice =
+                                        if (quantity > 0.0)
+                                            price / quantity
+                                        else null,
+                                    totalPrice = price,
+                                    receiptDate =
+                                        pendingOcrReceipt.value?.receiptDate
+                                )
+
+                                importedItemsForReview.value =
+                                    importedItemsForReview.value + newItem
+
+                                showAddReviewProductDialog.value = false
+                            } else {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Enter a product name, positive quantity and valid price.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    ) {
+                        Text("Add")
+                    }
+                },
+
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showAddReviewProductDialog.value = false
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -902,9 +924,75 @@ class MainActivity : ComponentActivity() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
+
+            // ============================================================
+            // IMPORT REVIEW - EDITABLE RECEIPT DATE
+            // ============================================================
+
             Spacer(
-                modifier = Modifier.height(20.dp)
+                modifier = Modifier.height(4.dp)
             )
+
+            OutlinedTextField(
+                value = reviewReceiptDate.value,
+                onValueChange = {
+                    reviewReceiptDate.value = it
+                },
+                label = {
+                    Text("Receipt Date")
+                },
+                placeholder = {
+                    Text("DD/MM/YYYY")
+                },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+
+            Spacer(
+                modifier = Modifier.height(6.dp)
+            )
+
+            // ============================================================
+            // IMPORT REVIEW - ADD MISSING PRODUCT BUTTON
+            // ============================================================
+
+            Button(
+                onClick = {
+                    newReviewProductName.value = ""
+                    newReviewProductQuantity.value = "1"
+                    newReviewProductPrice.value = ""
+                    newReviewProductCategory.value =
+                        HouseholdCategory.FOOD
+                    newReviewProductLocation.value = "Pantry"
+
+                    showAddReviewProductDialog.value = true
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Add Missing Product")
+            }
+
+            Spacer(
+                modifier = Modifier.height(4.dp)
+            )
+
+            Text(
+                text = String.format(
+                    java.util.Locale.getDefault(),
+                    "Product Total: $%.2f",
+                    recognisedProductTotal
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            Spacer(
+                modifier = Modifier.height(4.dp)
+            )
+
+
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement =
@@ -912,8 +1000,12 @@ class MainActivity : ComponentActivity() {
             ) {
 
                 items(
-                    importedItemsForReview.value
-                ) { reviewItem ->
+                    count = importedItemsForReview.value.size
+                ) { index ->
+
+                    val reviewItem = importedItemsForReview.value[index]
+                    val productNumber = index + 1
+                    val totalProducts = importedItemsForReview.value.size
 
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -929,7 +1021,7 @@ class MainActivity : ComponentActivity() {
                         ) {
 
                             Text(
-                                text = reviewItem.productName,
+                                text = "$productNumber/$totalProducts  ${reviewItem.productName}",
                                 style =
                                     MaterialTheme
                                         .typography
@@ -1269,10 +1361,61 @@ class MainActivity : ComponentActivity() {
                         val rawText =
                             pendingOcrRawText.value
 
+
+                        val enteredReceiptDate =
+                            reviewReceiptDate.value.trim()
+
+                        val normalisedReceiptDate =
+                            enteredReceiptDate.replace(
+                                Regex("\\bSept\\b", RegexOption.IGNORE_CASE),
+                                "Sep"
+                            )
+
+
+                        val validReceiptDate =
+                            enteredReceiptDate.isEmpty() ||
+                                    listOf(
+                                        java.time.format.DateTimeFormatter
+                                            .ofPattern("d/M/uuuu")
+                                            .withResolverStyle(
+                                                java.time.format.ResolverStyle.STRICT
+                                            ),
+                                        java.time.format.DateTimeFormatter
+                                            .ofPattern(
+                                                "d MMM uuuu",
+                                                java.util.Locale.ENGLISH
+                                            ),
+                                        java.time.format.DateTimeFormatter
+                                            .ofPattern(
+                                                "dMMMyy",
+                                                java.util.Locale.ENGLISH
+                                            )
+                                    ).any { format ->
+                                        runCatching {
+                                            java.time.LocalDate.parse(
+                                                normalisedReceiptDate,
+                                                format.withLocale(java.util.Locale.ENGLISH)
+                                            )
+                                        }.isSuccess
+                                    }
+
+
+                        if (!validReceiptDate) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Enter a valid date (DD/MM/YYYY).",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+
+
+
                         if (
                             parsedReceipt != null &&
-                            !rawText.isNullOrBlank()
+                            !rawText.isNullOrBlank() &&
+                            validReceiptDate
                         ) {
+
 
                             lifecycleScope.launch {
 
@@ -1339,8 +1482,10 @@ class MainActivity : ComponentActivity() {
                                         storeName =
                                             parsedReceipt.storeName,
 
+
                                         receiptDate =
-                                            parsedReceipt.receiptDate,
+                                            enteredReceiptDate.ifBlank { null },
+
 
                                         totalAmount =
                                             parsedReceipt.totalAmount,
@@ -1388,8 +1533,10 @@ class MainActivity : ComponentActivity() {
                                                 retailer =
                                                     parsedReceipt.storeName,
 
+
                                                 receiptDate =
-                                                    parsedReceipt.receiptDate,
+                                                    enteredReceiptDate.ifBlank { null },
+
 
                                                 productName =
                                                     item.productName,
@@ -1417,6 +1564,15 @@ class MainActivity : ComponentActivity() {
                                 // OCR IMPORT - UPDATE INVENTORY FROM REVIEWED FOOD ITEMS
                                 // ============================================================
 
+                                reviewedItems.forEach { item ->
+                                    Log.d(
+                                        "PantryPalInventory",
+                                        "Import candidate: ${item.productName} | " +
+                                                "category=${item.category} | " +
+                                                "quantity=${item.quantity}"
+                                    )
+                                }
+
                                 reviewedItems
                                     .filter { item ->
                                         item.category ==
@@ -1439,41 +1595,43 @@ class MainActivity : ComponentActivity() {
                                                     1
                                             }
 
-                                        // Support both existing PDF dates such as
-                                        // "16 Sep 2026" and OCR dates such as "16SEP26".
+
+                                        // Use the date confirmed during receipt review.
+                                        // Supports manual DD/MM/YYYY entry and
+                                        // existing PDF/OCR date formats.
+
                                         val purchaseDate =
-                                            item.receiptDate
+                                            enteredReceiptDate
+                                                .takeIf { it.isNotBlank() }
                                                 ?.let { dateText ->
 
-                                                    runCatching {
+                                                    val dateFormats = listOf(
+                                                        java.time.format.DateTimeFormatter
+                                                            .ofPattern("d/M/uuuu"),
 
-                                                        LocalDate.parse(
-                                                            dateText,
-                                                            java.time.format
-                                                                .DateTimeFormatter
-                                                                .ofPattern(
-                                                                    "d MMM yyyy",
-                                                                    java.util.Locale.ENGLISH
-                                                                )
-                                                        )
+                                                        java.time.format.DateTimeFormatter
+                                                            .ofPattern(
+                                                                "d MMM uuuu",
+                                                                java.util.Locale.ENGLISH
+                                                            ),
 
-                                                    }.getOrNull()
-                                                        ?: runCatching {
-
-                                                            LocalDate.parse(
-                                                                dateText.uppercase(
-                                                                    java.util.Locale.ENGLISH
-                                                                ),
-                                                                java.time.format
-                                                                    .DateTimeFormatter
-                                                                    .ofPattern(
-                                                                        "dMMMyy",
-                                                                        java.util.Locale.ENGLISH
-                                                                    )
+                                                        java.time.format.DateTimeFormatter
+                                                            .ofPattern(
+                                                                "dMMMyy",
+                                                                java.util.Locale.ENGLISH
                                                             )
+                                                    )
 
+                                                    dateFormats.firstNotNullOfOrNull { format ->
+                                                        runCatching {
+                                                            LocalDate.parse(
+                                                                dateText,
+                                                                format.withLocale(java.util.Locale.ENGLISH)
+                                                            )
                                                         }.getOrNull()
+                                                    }
                                                 }
+
 
                                         addOrUpdateInventoryItem(
                                             productName =
@@ -1766,6 +1924,10 @@ class MainActivity : ComponentActivity() {
                         return@addOnSuccessListener
                     }
 
+                    reviewReceiptDate.value =
+                        parsedReceipt.receiptDate.orEmpty()
+
+
                     pendingOcrReceipt.value = parsedReceipt
                     pendingOcrRawText.value = normalisedText
 
@@ -1876,7 +2038,14 @@ class MainActivity : ComponentActivity() {
 // GOOGLE PLAY BILLING - CONNECTION AND PRODUCT CHECKS
 // ============================================================
 
-            billingManager = BillingManager(this)
+            billingManager = BillingManager(
+                context = this,
+                onProPurchased = {
+                    runOnUiThread {
+                        isProUser.value = true
+                    }
+                }
+            )
 
             billingManager.connect(
                 onConnected = {
@@ -1905,9 +2074,12 @@ class MainActivity : ComponentActivity() {
                     // CHECK WHETHER PRO IS ALREADY OWNED
                     billingManager.checkProEntitlement(
                         onResult = { ownsPro ->
+                            runOnUiThread {
+                                isProUser.value = ownsPro
+                            }
                             android.util.Log.d(
                                 "PantryPalBilling",
-                                "Existing Pro entitlement: $ownsPro"
+                                "Verified existing Pro entitlement: $ownsPro"
                             )
                         },
                         onError = { error ->
@@ -3017,7 +3189,7 @@ class MainActivity : ComponentActivity() {
             Spacer(modifier = Modifier.height(12.dp))
 
             Text(
-                text = "Pro purchasing will be available soon.",
+                text = "Purchase securely through Google Play to unlock Pro analytics.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
@@ -4147,7 +4319,8 @@ class MainActivity : ComponentActivity() {
 
                         Text(
                             text =
-                                "${products.count { it.quantity > 0 }} items in stock",
+                                "${products.count { it.quantity > 0 }} products | " +
+                                        "${products.sumOf { it.quantity.coerceAtLeast(0) }} units in stock",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -6341,25 +6514,10 @@ class MainActivity : ComponentActivity() {
             Spacer(
                 modifier = Modifier.height(16.dp)
             )
+
             Button(
                 onClick = {
-
-                    if (
-                        androidx.core.content.ContextCompat.checkSelfPermission(
-                            this@MainActivity,
-                            android.Manifest.permission.CAMERA
-                        ) ==
-                        android.content.pm.PackageManager.PERMISSION_GRANTED
-                    ) {
-
-                        launchReceiptCamera()
-
-                    } else {
-
-                        receiptCameraPermissionLauncher.launch(
-                            android.Manifest.permission.CAMERA
-                        )
-                    }
+                    launchReceiptDocumentScanner()
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -6369,10 +6527,12 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
+
             Spacer(
                 modifier = Modifier.height(12.dp)
             )
             // OCR Button start
+
             Button(
                 onClick = {
                     receiptImageLauncher.launch("image/*")
@@ -6384,6 +6544,7 @@ class MainActivity : ComponentActivity() {
                     fontWeight = FontWeight.SemiBold
                 )
             }
+
 
             Spacer(
                 modifier = Modifier.height(12.dp)
@@ -6817,33 +6978,29 @@ class MainActivity : ComponentActivity() {
                 .padding(bottom = 80.dp)
         ) {
 
-            Text(
-                text = "PantryPal",
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
+            // ============================================================
+            // IMPORT REVIEW - COMPACT HEADER
+            // ============================================================
 
-            Spacer(
-                modifier = Modifier.height(4.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
 
-            Text(
-                text = "Price history",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
+                Text(
+                    text = "Review Receipt",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
 
-            Spacer(
-                modifier = Modifier.height(4.dp)
-            )
-
-            Text(
-                text = "Compare previous purchases and prices",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+                Text(
+                    text = "${importedItemsForReview.value.size} products",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
             Spacer(
                 modifier = Modifier.height(12.dp)
@@ -7161,6 +7318,38 @@ class MainActivity : ComponentActivity() {
 
     private val pendingOcrRawText =
         mutableStateOf<String?>(null)
+
+
+    // ============================================================
+    // IMPORT REVIEW - MANUAL PRODUCT ENTRY STATE
+    // ============================================================
+
+    private val showAddReviewProductDialog =
+        mutableStateOf(false)
+
+    private val newReviewProductName =
+        mutableStateOf("")
+
+    private val newReviewProductQuantity =
+        mutableStateOf("1")
+
+    private val newReviewProductPrice =
+        mutableStateOf("")
+
+    private val newReviewProductCategory =
+        mutableStateOf(HouseholdCategory.FOOD)
+
+    private val newReviewProductLocation =
+        mutableStateOf("Pantry")
+
+
+    // ============================================================
+    // IMPORT REVIEW - EDITABLE RECEIPT DATE
+    // ============================================================
+
+    private val reviewReceiptDate =
+        mutableStateOf("")
+
 
     // ============================================================
 // IMPORT REVIEW - LOCATION EDITOR STATE
