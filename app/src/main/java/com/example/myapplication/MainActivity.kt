@@ -48,6 +48,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.focus.onFocusChanged
 import com.example.myapplication.data.BarcodeNameEntity
 import androidx.compose.material3.Checkbox
 import androidx.compose.ui.focus.FocusRequester
@@ -593,11 +597,12 @@ class MainActivity : ComponentActivity() {
 
 
                 reviewReceiptDate.value =
-                    parsedReceipt.receiptDate.orEmpty()
+                    formatReceiptDate(parsedReceipt.receiptDate)
 
 
                 pendingOcrReceipt.value = parsedReceipt
                 pendingOcrRawText.value = text
+                addImportedProductsToInventory.value = true
 
                 currentScreen.value = "IMPORT_REVIEW"
 
@@ -708,6 +713,16 @@ class MainActivity : ComponentActivity() {
     // ============================================================
 // IMPORT REVIEW - REVIEW IMPORTED PRODUCT LOCATIONS
 // ============================================================
+
+    // Count discrete purchased units; weighted/measured lines count as one purchase.
+    // The measured quantity remains unchanged in ReceiptItemEntity for price history.
+    private fun receiptPurchaseUnits(quantity: Double?, unit: String?): Int {
+        val measuredUnits = setOf("kg", "g", "gram", "grams", "l", "ml")
+        if (unit?.trim()?.lowercase() in measuredUnits) return 1
+        val q = quantity ?: return 1
+        if (!q.isFinite() || q <= 0.0) return 1
+        return if (q % 1.0 != 0.0) 1 else q.toInt().coerceAtLeast(1)
+    }
 
     @Composable
     private fun ImportReviewScreen() {
@@ -895,35 +910,23 @@ class MainActivity : ComponentActivity() {
             // IMPORT REVIEW - PANTRYPAL HEADER
             // ============================================================
 
-            Text(
-                text = "PantryPal",
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-
-            Spacer(
-                modifier = Modifier.height(4.dp)
-            )
-
-            Text(
-                text = "Review imported items",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground,
-                maxLines = 2
-            )
-
-            Spacer(
-                modifier = Modifier.height(4.dp)
-            )
-
-            Text(
-                text = "Check PantryPal's suggestions before continuing",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Review Receipt",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "${importedItemsForReview.value.size} products",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
             // ============================================================
             // IMPORT REVIEW - EDITABLE RECEIPT DATE
@@ -933,21 +936,73 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.height(4.dp)
             )
 
+            // Keep cursor position explicitly when adding date separators.
+            // Selecting the prefilled OCR/PDF date on focus makes replacement immediate.
+            var dateField by remember {
+                mutableStateOf(TextFieldValue(reviewReceiptDate.value.takeUnless { it.equals("Unknown", ignoreCase = true) } ?: ""))
+            }
+            LaunchedEffect(reviewReceiptDate.value) {
+                val visibleDate = reviewReceiptDate.value.takeUnless {
+                    it.equals("Unknown", ignoreCase = true)
+                } ?: ""
+                if (dateField.text != visibleDate) {
+                    dateField = TextFieldValue(visibleDate)
+                }
+            }
+
             OutlinedTextField(
-                value = reviewReceiptDate.value,
-                onValueChange = {
-                    reviewReceiptDate.value = it
+                value = dateField,
+                onValueChange = { incoming ->
+                    val typed = if (dateField.text.equals("Unknown", ignoreCase = true)) {
+                        incoming.text.filter(Char::isDigit)
+                    } else incoming.text
+                    val digits = typed.filter(Char::isDigit)
+                    val numericEntry = typed.all { it.isDigit() || it == '/' }
+
+                    val formatted = if (numericEntry && digits.length <= 8) {
+                        buildString {
+                            digits.forEachIndexed { index, digit ->
+                                if (index == 2 || index == 4) append('/')
+                                append(digit)
+                            }
+                        }
+                    } else typed
+
+                    // Place the cursor after the entered date, not before inserted '/'.
+                    dateField = incoming.copy(
+                        text = formatted,
+                        selection = TextRange(formatted.length)
+                    )
+                    reviewReceiptDate.value = formatted
                 },
-                label = {
-                    Text("Receipt Date")
-                },
-                placeholder = {
-                    Text("DD/MM/YYYY")
-                },
+                label = { Text("Receipt Date") },
+                placeholder = { Text("DD/MM/YYYY") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { state ->
+                        if (state.isFocused && dateField.text.isNotEmpty()) {
+                            dateField = dateField.copy(
+                                selection = TextRange(0, dateField.text.length)
+                            )
+                        }
+                    }
             )
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = addImportedProductsToInventory.value,
+                    onCheckedChange = { addImportedProductsToInventory.value = it }
+                )
+                Text(
+                    "Add to Inventory",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
 
             Spacer(
                 modifier = Modifier.height(6.dp)
@@ -1017,7 +1072,7 @@ class MainActivity : ComponentActivity() {
                     ) {
 
                         Column(
-                            modifier = Modifier.padding(16.dp)
+                            modifier = Modifier.padding(10.dp)
                         ) {
 
                             Text(
@@ -1363,42 +1418,12 @@ class MainActivity : ComponentActivity() {
 
 
                         val enteredReceiptDate =
-                            reviewReceiptDate.value.trim()
+                            reviewReceiptDate.value.trim().takeUnless {
+                                it.equals("Unknown", ignoreCase = true)
+                            } ?: ""
 
-                        val normalisedReceiptDate =
-                            enteredReceiptDate.replace(
-                                Regex("\\bSept\\b", RegexOption.IGNORE_CASE),
-                                "Sep"
-                            )
-
-
-                        val validReceiptDate =
-                            enteredReceiptDate.isEmpty() ||
-                                    listOf(
-                                        java.time.format.DateTimeFormatter
-                                            .ofPattern("d/M/uuuu")
-                                            .withResolverStyle(
-                                                java.time.format.ResolverStyle.STRICT
-                                            ),
-                                        java.time.format.DateTimeFormatter
-                                            .ofPattern(
-                                                "d MMM uuuu",
-                                                java.util.Locale.ENGLISH
-                                            ),
-                                        java.time.format.DateTimeFormatter
-                                            .ofPattern(
-                                                "dMMMyy",
-                                                java.util.Locale.ENGLISH
-                                            )
-                                    ).any { format ->
-                                        runCatching {
-                                            java.time.LocalDate.parse(
-                                                normalisedReceiptDate,
-                                                format.withLocale(java.util.Locale.ENGLISH)
-                                            )
-                                        }.isSuccess
-                                    }
-
+                        val parsedDate = parseReceiptDateForSorting(enteredReceiptDate)
+                        val validReceiptDate = enteredReceiptDate.isEmpty() || parsedDate != null
 
                         if (!validReceiptDate) {
                             Toast.makeText(
@@ -1410,10 +1435,24 @@ class MainActivity : ComponentActivity() {
 
 
 
+                        val unclassifiedCount =
+                            importedItemsForReview.value.count {
+                                it.category == HouseholdCategory.UNKNOWN
+                            }
+
+                        if (unclassifiedCount > 0) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Classify all $unclassifiedCount remaining products before importing.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+
                         if (
                             parsedReceipt != null &&
                             !rawText.isNullOrBlank() &&
-                            validReceiptDate
+                            validReceiptDate &&
+                            unclassifiedCount == 0
                         ) {
 
 
@@ -1484,11 +1523,15 @@ class MainActivity : ComponentActivity() {
 
 
                                         receiptDate =
-                                            enteredReceiptDate.ifBlank { null },
+                                            parsedDate?.format(receiptDisplayFormatter),
 
 
                                         totalAmount =
-                                            parsedReceipt.totalAmount,
+                                            parsedReceipt.totalAmount
+                                                ?: importedItemsForReview.value.sumOf { item ->
+                                                    item.totalPrice
+                                                        ?: (item.unitPrice ?: 0.0) * (item.quantity ?: 1.0)
+                                                }.takeIf { total -> total > 0.0 },
 
                                         rawText =
                                             rawText,
@@ -1500,7 +1543,9 @@ class MainActivity : ComponentActivity() {
                                             fingerprint,
 
                                         itemCount =
-                                            parsedReceipt.itemCount,
+                                            importedItemsForReview.value.sumOf { item ->
+                                                receiptPurchaseUnits(item.quantity, item.unit)
+                                            },
 
                                         receiptSource =
                                             parsedReceipt.receiptSource ?: "IN_STORE"
@@ -1535,7 +1580,7 @@ class MainActivity : ComponentActivity() {
 
 
                                                 receiptDate =
-                                                    enteredReceiptDate.ifBlank { null },
+                                                    parsedDate?.format(receiptDisplayFormatter),
 
 
                                                 productName =
@@ -1575,15 +1620,15 @@ class MainActivity : ComponentActivity() {
 
                                 reviewedItems
                                     .filter { item ->
-                                        item.category ==
-                                                HouseholdCategory.FOOD
+                                        addImportedProductsToInventory.value &&
+                                            item.category == HouseholdCategory.FOOD
                                     }
                                     .forEach { item ->
 
                                         val inventoryQuantity =
                                             when {
 
-                                                item.unit == "kg" ->
+                                                item.unit?.trim()?.lowercase() in setOf("kg", "g", "gram", "grams", "l", "ml") ->
                                                     1
 
                                                 item.quantity != null ->
@@ -1600,38 +1645,7 @@ class MainActivity : ComponentActivity() {
                                         // Supports manual DD/MM/YYYY entry and
                                         // existing PDF/OCR date formats.
 
-                                        val purchaseDate =
-                                            enteredReceiptDate
-                                                .takeIf { it.isNotBlank() }
-                                                ?.let { dateText ->
-
-                                                    val dateFormats = listOf(
-                                                        java.time.format.DateTimeFormatter
-                                                            .ofPattern("d/M/uuuu"),
-
-                                                        java.time.format.DateTimeFormatter
-                                                            .ofPattern(
-                                                                "d MMM uuuu",
-                                                                java.util.Locale.ENGLISH
-                                                            ),
-
-                                                        java.time.format.DateTimeFormatter
-                                                            .ofPattern(
-                                                                "dMMMyy",
-                                                                java.util.Locale.ENGLISH
-                                                            )
-                                                    )
-
-                                                    dateFormats.firstNotNullOfOrNull { format ->
-                                                        runCatching {
-                                                            LocalDate.parse(
-                                                                dateText,
-                                                                format.withLocale(java.util.Locale.ENGLISH)
-                                                            )
-                                                        }.getOrNull()
-                                                    }
-                                                }
-
+                                        val purchaseDate = parsedDate
 
                                         addOrUpdateInventoryItem(
                                             productName =
@@ -1925,11 +1939,12 @@ class MainActivity : ComponentActivity() {
                     }
 
                     reviewReceiptDate.value =
-                        parsedReceipt.receiptDate.orEmpty()
+                        formatReceiptDate(parsedReceipt.receiptDate)
 
 
                     pendingOcrReceipt.value = parsedReceipt
                     pendingOcrRawText.value = normalisedText
+                    addImportedProductsToInventory.value = true
 
                     lifecycleScope.launch {
 
@@ -4320,7 +4335,7 @@ class MainActivity : ComponentActivity() {
                         Text(
                             text =
                                 "${products.count { it.quantity > 0 }} products | " +
-                                        "${products.sumOf { it.quantity.coerceAtLeast(0) }} units in stock",
+                                        "${products.sumOf { it.quantity.coerceAtLeast(0) }} items in stock",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -5118,17 +5133,7 @@ class MainActivity : ComponentActivity() {
                                     latestFoodItems.forEach { receiptItem ->
 
                                         val purchaseDate =
-                                            receiptItem.receiptDate?.let { dateText ->
-
-                                                runCatching {
-
-                                                    LocalDate.parse(
-                                                        dateText,
-                                                        java.time.format.DateTimeFormatter
-                                                            .ofPattern("d MMM yyyy")
-                                                    )
-                                                }.getOrNull()
-                                            }
+                                            parseReceiptDateForSorting(receiptItem.receiptDate)
 
                                         addOrUpdateInventoryItem(
                                             productName =
@@ -6473,7 +6478,7 @@ class MainActivity : ComponentActivity() {
                         Text("Delete Receipts")
                     },
                     text = {
-                        Text("Delete all imported receipts?")
+                        Text("Delete all imported receipts? Inventory quantities will not be reduced or reversed.")
                     },
                     confirmButton = {
                         Button(
@@ -6660,6 +6665,10 @@ class MainActivity : ComponentActivity() {
                         )
             }
 
+        var archiveSelectionMode by remember { mutableStateOf(false) }
+        var archiveSelectedIds by remember { mutableStateOf(setOf<Int>()) }
+        var showArchiveDeleteConfirm by remember { mutableStateOf(false) }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -6716,6 +6725,27 @@ class MainActivity : ComponentActivity() {
                     text = "‹ Back to Receipts",
                     fontWeight = FontWeight.SemiBold
                 )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = {
+                    archiveSelectionMode = !archiveSelectionMode
+                    if (!archiveSelectionMode) archiveSelectedIds = emptySet()
+                }) {
+                    Text(if (archiveSelectionMode) "Cancel selection" else "Select receipts")
+                }
+            }
+
+            if (archiveSelectionMode && archiveSelectedIds.isNotEmpty()) {
+                OutlinedButton(
+                    onClick = { showArchiveDeleteConfirm = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Delete Selected (${archiveSelectedIds.size})")
+                }
             }
 
             Spacer(
@@ -6781,21 +6811,50 @@ class MainActivity : ComponentActivity() {
                         },
 
                         onDelete = {
-                            // Archived receipts are
-                            // view-only for now.
+                            lifecycleScope.launch {
+                                database.receiptItemDao().deleteForReceipt(receipt.id.toLong())
+                                database.receiptDao().deleteReceiptById(receipt.id)
+                                archiveSelectedIds = archiveSelectedIds - receipt.id
+                                refreshReceipts()
+                            }
                         },
-
-                        selectionMode = false,
-
-                        selected = false,
-
-                        onSelectionChange = {
-                            // No selection mode
-                            // in Archive V1.
+                        onLongPress = {
+                            archiveSelectionMode = true
+                            archiveSelectedIds = archiveSelectedIds + receipt.id
+                        },
+                        selectionMode = archiveSelectionMode,
+                        selected = receipt.id in archiveSelectedIds,
+                        onSelectionChange = { checked ->
+                            archiveSelectedIds = if (checked) archiveSelectedIds + receipt.id
+                                else archiveSelectedIds - receipt.id
                         }
                     )
                 }
             }
+        }
+        if (showArchiveDeleteConfirm) {
+            AlertDialog(
+                onDismissRequest = { showArchiveDeleteConfirm = false },
+                title = { Text("Delete archived receipts?") },
+                text = { Text("Delete ${archiveSelectedIds.size} receipt(s) and their purchase history? Inventory quantities will not change.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        lifecycleScope.launch {
+                            archiveSelectedIds.forEach { id ->
+                                database.receiptItemDao().deleteForReceipt(id.toLong())
+                                database.receiptDao().deleteReceiptById(id)
+                            }
+                            archiveSelectedIds = emptySet()
+                            archiveSelectionMode = false
+                            showArchiveDeleteConfirm = false
+                            refreshReceipts()
+                        }
+                    }) { Text("Delete") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showArchiveDeleteConfirm = false }) { Text("Cancel") }
+                }
+            )
         }
     }
 
@@ -6816,7 +6875,7 @@ class MainActivity : ComponentActivity() {
                 appendLine()
                 appendLine(retailer)
                 appendLine(
-                    "Date: ${receipt.receiptDate ?: "Unknown"}"
+                    "Date: ${formatReceiptDate(receipt.receiptDate)}"
                 )
 
                 appendLine(
@@ -7108,7 +7167,7 @@ class MainActivity : ComponentActivity() {
                                 )
 
                                 Text(
-                                    text = date,
+                                    text = formatReceiptDate(date),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -7349,6 +7408,8 @@ class MainActivity : ComponentActivity() {
 
     private val reviewReceiptDate =
         mutableStateOf("")
+
+    private val addImportedProductsToInventory = mutableStateOf(true)
 
 
     // ============================================================
@@ -7800,6 +7861,14 @@ class MainActivity : ComponentActivity() {
             )
     }
 
+    private val receiptDisplayFormatter: DateTimeFormatter =
+        DateTimeFormatter.ofPattern("d MMM, uuuu", Locale.ENGLISH)
+
+    private fun formatReceiptDate(value: String?): String =
+        parseReceiptDateForSorting(value)?.format(receiptDisplayFormatter)
+            ?: value?.takeIf { it.isNotBlank() }
+            ?: "Unknown"
+
     private fun parseReceiptDateForSorting(
         value: String?
     ): LocalDate? {
@@ -7816,6 +7885,16 @@ class MainActivity : ComponentActivity() {
                 Regex("""(?i)\bSept\b"""),
                 "Sep"
             )
+
+        // Existing saved values and numeric/manual entry.
+        val supportedFormats = listOf(
+            DateTimeFormatter.ISO_LOCAL_DATE,
+            DateTimeFormatter.ofPattern("d/M/uuuu", Locale.ENGLISH),
+            DateTimeFormatter.ofPattern("d MMM, uuuu", Locale.ENGLISH)
+        )
+        supportedFormats.firstNotNullOfOrNull { formatter ->
+            runCatching { LocalDate.parse(normalisedValue, formatter) }.getOrNull()
+        }?.let { return it }
 
         val shortMonthDate =
             runCatching {

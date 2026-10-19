@@ -105,16 +105,28 @@ object AnalyticsCalculator {
                 item.receiptId in includedReceiptIds
             }
 
+        // Official receipt total is preferred. OCR receipts without one
+        // contribute the sum of their saved recognised product prices.
+        // Each receipt is processed exactly once; receipt item prices are
+        // only a fallback, never added to an existing official total.
+        val itemsByReceiptId = receiptItems.groupBy { it.receiptId }
+
+        fun effectiveTotal(receipt: ReceiptEntity): Double? =
+            receipt.totalAmount ?: itemsByReceiptId[receipt.id.toLong()]
+                ?.mapNotNull { it.totalPrice }
+                ?.takeIf { it.isNotEmpty() }
+                ?.sum()
+
         val totalSpend =
             filteredReceipts
-                .mapNotNull { it.totalAmount }
+                .mapNotNull { effectiveTotal(it) }
                 .sum()
 
         val retailerSpend =
             filteredReceipts
                 .filter {
                     !it.storeName.isNullOrBlank() &&
-                            it.totalAmount != null
+                            effectiveTotal(it) != null
                 }
                 .groupBy {
                     it.storeName!!.trim()
@@ -123,7 +135,7 @@ object AnalyticsCalculator {
                     RetailerSpend(
                         retailer = retailer,
                         amount = retailerReceipts
-                            .mapNotNull { it.totalAmount }
+                            .mapNotNull { effectiveTotal(it) }
                             .sum()
                     )
                 }

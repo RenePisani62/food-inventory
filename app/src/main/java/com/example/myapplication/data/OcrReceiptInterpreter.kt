@@ -936,6 +936,27 @@ object OcrReceiptInterpreter {
                 )
             }
 
+        // Consolidate repeated OCR lines for the same product into
+        // one reviewed product with accumulated quantity and price.
+        // Use the complete recognised name (including retailer product code)
+        // to avoid merging different products with similar descriptions.
+        val consolidatedItems = structuredItems
+            .groupBy { item ->
+                item.name.trim().replace(Regex("\\s+"), " ").lowercase()
+            }
+            .values
+            .map { matching ->
+                val first = matching.first()
+                val quantity = matching.sumOf { it.quantity ?: 1.0 }
+                val total = matching.sumOf { it.totalPrice ?: 0.0 }
+                first.copy(
+                    quantity = quantity,
+                    totalPrice = total.takeIf { matching.any { it.totalPrice != null } },
+                    unitPrice = if (quantity > 0.0 && matching.any { it.totalPrice != null })
+                        total / quantity else null
+                )
+            }
+
         return ParsedReceipt(
             storeName =
                 receipt.retailer
@@ -951,15 +972,15 @@ object OcrReceiptInterpreter {
                 receipt.totalAmount,
 
             itemCount =
-                structuredItems.size,
+                consolidatedItems.sumOf { (it.quantity ?: 1.0).toInt() },
 
             products =
-                structuredItems.map {
+                consolidatedItems.map {
                     it.name
                 },
 
             structuredItems =
-                structuredItems,
+                consolidatedItems,
 
             adjustments =
                 emptyList()

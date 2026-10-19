@@ -58,11 +58,17 @@ fun ReceiptCard(
     // RECEIPT CARD - STRUCTURED PRODUCT DATA
     // ============================================================
 
-    val structuredItemCount =
-        receiptProducts.size
-
-    val receiptItemCount =
-        receipt.itemCount ?: structuredItemCount
+    // Physical units are whole numbers. Measured/weighted purchases count as one
+    // item while their actual decimal quantity remains stored for price history.
+    val receiptItemCount = if (receiptProducts.isNotEmpty()) {
+        receiptProducts.sumOf { item ->
+            val measured = item.unit?.trim()?.lowercase() in
+                setOf("kg", "g", "gram", "grams", "l", "ml")
+            val qty = item.quantity ?: 1.0
+            if (measured || !qty.isFinite() || qty <= 0.0 || qty % 1.0 != 0.0) 1
+            else qty.toInt().coerceAtLeast(1)
+        }.toString()
+    } else (receipt.itemCount ?: 0).toString()
 
     // ============================================================
     // RECEIPT CARD - MAIN CARD
@@ -262,9 +268,9 @@ fun ReceiptCard(
             Text(
                 text =
                     if (expanded)
-                        "▲ Hide $structuredItemCount products"
+                        "▲ Hide ${receiptProducts.size} products"
                     else
-                        "▼ $structuredItemCount products recognised",
+                        "▼ ${receiptProducts.size} products recognised",
                 color = theme.headerColor,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
