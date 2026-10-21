@@ -26,6 +26,13 @@ object AnalyticsCalculator {
             Locale.ENGLISH
         )
 
+    // Receipt dates are stored by MainActivity as e.g. "24 Sep, 2026".
+    private val commaReceiptDateFormatter =
+        DateTimeFormatter.ofPattern("d MMM, uuuu", Locale.ENGLISH)
+
+    private val numericReceiptDateFormatter =
+        DateTimeFormatter.ofPattern("d/M/uuuu", Locale.ENGLISH)
+
        fun calculate(
         receipts: List<ReceiptEntity>,
         receiptItems: List<ReceiptItemEntity>,
@@ -187,7 +194,7 @@ object AnalyticsCalculator {
            val latestReceiptDate =
                includedReceiptDates.maxOrNull()
            val monthlySpendBase =
-               receipts
+               filteredReceipts
                    .mapNotNull { receipt ->
 
                        val receiptDate =
@@ -196,7 +203,7 @@ object AnalyticsCalculator {
                            )
 
                        val totalAmount =
-                           receipt.totalAmount
+                           effectiveTotal(receipt)
 
                        if (
                            receiptDate == null ||
@@ -322,6 +329,17 @@ object AnalyticsCalculator {
          * 27 May 2026
          * 16 Sep 2026
          */
+        // Support dates saved by current PantryPal builds, older ISO values,
+        // and manually entered DD/MM/YYYY dates without changing stored data.
+        val savedDateFormats = listOf(
+            commaReceiptDateFormatter,
+            DateTimeFormatter.ISO_LOCAL_DATE,
+            numericReceiptDateFormatter
+        )
+        savedDateFormats.firstNotNullOfOrNull { formatter ->
+            runCatching { LocalDate.parse(normalisedValue, formatter) }.getOrNull()
+        }?.let { return it }
+
         val shortMonthDate =
             runCatching {
                 LocalDate.parse(

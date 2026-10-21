@@ -5295,7 +5295,8 @@ class MainActivity : ComponentActivity() {
                         product.expiryDate ?: "Not set"
 
                     val statusText =
-                        expiryStatus(product.expiryDate)
+                        if (product.quantity <= 0) "Out of stock"
+                        else expiryStatus(product.expiryDate)
 
                     Surface(
                         modifier = Modifier
@@ -8200,6 +8201,8 @@ class MainActivity : ComponentActivity() {
         val today = java.time.LocalDate.now()
 
         items.forEach { item ->
+            // Depleted products are retained for history/shopping, not expiry warnings.
+            if (item.quantity <= 0) return@forEach
             val date = item.expiryDate?.trim()
 
             if (!date.isNullOrBlank()) {
