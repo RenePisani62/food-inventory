@@ -625,7 +625,8 @@ object OcrReceiptInterpreter {
                  */
 
                 " net @" in text ||
-                        "$/kg" in text
+                        "$/kg" in text ||
+                        Regex("""\b\d+\s*PCS\s*@""", RegexOption.IGNORE_CASE).containsMatchIn(text)
             }
             .sortedBy {
                 it.centreY
@@ -674,6 +675,9 @@ object OcrReceiptInterpreter {
          * Aldi example:
          * DATE/TIME 16SEP26 12:00
          */
+
+        val slashDate = Regex("""\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b""")
+        allLines.asSequence().mapNotNull { slashDate.find(it.text)?.value }.firstOrNull()?.let { return it }
 
         val dateTimeRegex =
             Regex(
@@ -918,21 +922,24 @@ object OcrReceiptInterpreter {
                         ?.replace(',', '.')
                         ?.toDoubleOrNull()
 
+                // Quantity metadata can appear on the line below the product.
+                // Keep the merchandise line total separate from the per-unit price.
+                val pieces = item.metadata.firstNotNullOfOrNull { metadata ->
+                    Regex("""\b(\d+)\s*PCS\s*@\s*\$?\s*(\d+[.,]\d{2})\s*/\s*PC\b""", RegexOption.IGNORE_CASE)
+                        .find(metadata)
+                        ?.let { match ->
+                            val count = match.groupValues[1].toDoubleOrNull()
+                            val each = match.groupValues[2].replace(',', '.').toDoubleOrNull()
+                            if (count != null && count > 0 && each != null) Pair(count, each) else null
+                        }
+                }
+
                 ParsedReceiptItem(
-                    name =
-                        item.description,
-
-                    quantity =
-                        null,
-
-                    unit =
-                        null,
-
-                    unitPrice =
-                        null,
-
-                    totalPrice =
-                        price
+                    name = item.description,
+                    quantity = pieces?.first,
+                    unit = if (pieces != null) "pc" else null,
+                    unitPrice = pieces?.second,
+                    totalPrice = price
                 )
             }
 
@@ -952,7 +959,9 @@ object OcrReceiptInterpreter {
                 first.copy(
                     quantity = quantity,
                     totalPrice = total.takeIf { matching.any { it.totalPrice != null } },
-                    unitPrice = if (quantity > 0.0 && matching.any { it.totalPrice != null })
+                    unitPrice = if (matching.size == 1 && first.unitPrice != null)
+                        first.unitPrice
+                    else if (quantity > 0.0 && matching.any { it.totalPrice != null })
                         total / quantity else null
                 )
             }
@@ -1289,74 +1298,6 @@ object OcrReceiptInterpreter {
         )
 
         return parsedReceipt
-        if (pairedItems.isNotEmpty()) {
-
-            val normalisedReceipt =
-                buildNormalisedReceipt(
-                    items = pairedItems,
-                    allLines = allLines
-                )
-
-            android.util.Log.e(
-                "PantryPalOCRSTRUCT",
-                "RECEIPT | " +
-                        "retailer=${normalisedReceipt.retailer} | " +
-                        "date=${normalisedReceipt.receiptDate} | " +
-                        "total=${normalisedReceipt.totalAmount} | " +
-                        "items=${normalisedReceipt.items.size}"
-            )
-
-            normalisedReceipt.items
-                .forEachIndexed { index, item ->
-
-                    android.util.Log.e(
-                        "PantryPalOCRSTRUCT",
-                        "ITEM ${index + 1} | " +
-                                "description='${item.description}' | " +
-                                "price='${item.price}' | " +
-                                "metadata=${item.metadata}"
-                    )
-                }
-
-            val parsedReceipt =
-                toParsedReceipt(
-                    normalisedReceipt
-                )
-
-            android.util.Log.e(
-                "PantryPalOCRPARSED",
-                "RECEIPT | " +
-                        "store=${parsedReceipt.storeName} | " +
-                        "date=${parsedReceipt.receiptDate} | " +
-                        "total=${parsedReceipt.totalAmount} | " +
-                        "itemCount=${parsedReceipt.itemCount}"
-            )
-
-            parsedReceipt.structuredItems
-                .forEachIndexed { index, item ->
-
-                    android.util.Log.e(
-                        "PantryPalOCRPARSED",
-                        "ITEM ${index + 1} | " +
-                                "name='${item.name}' | " +
-                                "quantity=${item.quantity} | " +
-                                "unit=${item.unit} | " +
-                                "unitPrice=${item.unitPrice} | " +
-                                "totalPrice=${item.totalPrice}"
-                    )
-                }
-
-            val normalisedMerchandise =
-                buildNormalisedMerchandiseText(
-                    pairedItems
-                )
-
-            android.util.Log.e(
-                "PantryPalOCRNORMAL",
-                "NORMALISED MERCHANDISE\n" +
-                        normalisedMerchandise
-            )
-        }
     }
     private fun logPriceRelationships(
         lines: List<OcrLine>

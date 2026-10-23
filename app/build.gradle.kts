@@ -16,7 +16,7 @@ android {
         applicationId = "com.renepisani.pantrypal"
         minSdk = 24
         targetSdk = 36
-        versionCode = 144
+        versionCode = 145
         versionName = "1.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

@@ -597,7 +597,12 @@ class MainActivity : ComponentActivity() {
 
 
                 reviewReceiptDate.value =
-                    formatReceiptDate(parsedReceipt.receiptDate)
+                    parseReceiptDateForSorting(parsedReceipt.receiptDate)
+                        ?.format(DateTimeFormatter.ofPattern("dd/MM/uuuu", Locale.ENGLISH))
+                        ?: (parsedReceipt.receiptDate ?: "")
+                reviewRetailerName.value = parsedReceipt.storeName
+                reviewReceiptTotal.value = parsedReceipt.totalAmount?.let { String.format(Locale.US, "%.2f", it) } ?: ""
+                reviewDiscountAmount.value = parsedReceipt.adjustments.filter { it.amount < 0.0 }.sumOf { -it.amount }.takeIf { it > 0.0 }?.let { String.format(Locale.US, "%.2f", it) } ?: ""
 
 
                 pendingOcrReceipt.value = parsedReceipt
@@ -726,6 +731,81 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun ImportReviewScreen() {
+        // The editor updates the staged item; persistence happens only on Confirm Import.
+        var editingReviewIndex by remember { mutableStateOf<Int?>(null) }
+        var editProductName by remember { mutableStateOf("") }
+        var editProductQuantity by remember { mutableStateOf("") }
+        var editProductUnitPrice by remember { mutableStateOf("") }
+        var editProductTotal by remember { mutableStateOf("") }
+
+        editingReviewIndex?.let { editIndex ->
+            AlertDialog(
+                onDismissRequest = { editingReviewIndex = null },
+                title = { Text("Edit product") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = editProductName,
+                            onValueChange = { editProductName = it },
+                            label = { Text("Product name") },
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = editProductQuantity,
+                            onValueChange = { editProductQuantity = it },
+                            label = { Text("Quantity") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = editProductUnitPrice,
+                            onValueChange = { editProductUnitPrice = it },
+                            label = { Text("Unit price ($) — optional") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true
+                        )
+                        OutlinedTextField(
+                            value = editProductTotal,
+                            onValueChange = { editProductTotal = it },
+                            label = { Text("Line total ($) — optional") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true
+                        )
+                        Text("If both prices are entered, the line total is used for spending; the unit price is stored separately.",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val name = editProductName.trim()
+                        val qty = editProductQuantity.trim().toDoubleOrNull()
+                        val unitText = editProductUnitPrice.trim().removePrefix("$")
+                        val totalText = editProductTotal.trim().removePrefix("$")
+                        val unitPrice = unitText.toDoubleOrNull()
+                        val lineTotal = totalText.toDoubleOrNull()
+                        val valid = name.isNotEmpty() && qty != null && qty.isFinite() && qty > 0.0 &&
+                            (unitText.isBlank() || (unitPrice != null && unitPrice.isFinite() && unitPrice >= 0.0)) &&
+                            (totalText.isBlank() || (lineTotal != null && lineTotal.isFinite() && lineTotal >= 0.0))
+                        if (valid && qty != null) {
+                            importedItemsForReview.value = importedItemsForReview.value.mapIndexed { index, item ->
+                                if (index == editIndex) item.copy(
+                                    productName = name,
+                                    quantity = qty,
+                                    unitPrice = unitPrice ?: lineTotal?.div(qty),
+                                    totalPrice = lineTotal ?: unitPrice?.times(qty)
+                                ) else item
+                            }
+                            editingReviewIndex = null
+                        } else {
+                            Toast.makeText(this@MainActivity, "Enter a name, positive quantity and valid prices.", Toast.LENGTH_LONG).show()
+                        }
+                    }) { Text("Save") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { editingReviewIndex = null }) { Text("Cancel") }
+                }
+            )
+        }
 
 
         // ============================================================
@@ -741,6 +821,10 @@ class MainActivity : ComponentActivity() {
                     ?: 0.0
             }
 
+
+        // Discount is a positive savings amount. The receipt total remains authoritative.
+        val savings = reviewDiscountAmount.value.trim().removePrefix("$").toDoubleOrNull() ?: 0.0
+        val afterDiscountTotal = recognisedProductTotal - savings
 
         if (showAddReviewProductDialog.value) {
 
@@ -902,7 +986,7 @@ class MainActivity : ComponentActivity() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp)
-                .padding(top = 16.dp)
+                .padding(top = 8.dp)
                 .padding(bottom = 80.dp)
         ) {
 
@@ -926,6 +1010,65 @@ class MainActivity : ComponentActivity() {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+
+            var showReceiptDetails by remember { mutableStateOf(false) }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "${reviewRetailerName.value.ifBlank { "Unknown retailer" }} · $${reviewReceiptTotal.value.ifBlank { "?" }}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { showReceiptDetails = !showReceiptDetails }) {
+                    Text(if (showReceiptDetails) "Hide details" else "Edit details")
+                }
+            }
+            if (showReceiptDetails) {
+            OutlinedTextField(
+                value = reviewRetailerName.value,
+                onValueChange = { reviewRetailerName.value = it },
+                label = { Text("Retailer name") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().onFocusChanged { state ->
+                    if (state.isFocused && reviewRetailerName.value.trim().lowercase() in
+                        setOf("unknown", "unknown retailer", "unrecognised", "unrecognized")) {
+                        reviewRetailerName.value = ""
+                    }
+                }
+            )
+            OutlinedTextField(
+                value = reviewReceiptTotal.value,
+                onValueChange = { reviewReceiptTotal.value = it },
+                label = { Text("Receipt total ($)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().onFocusChanged { state ->
+                    if (state.isFocused && reviewReceiptTotal.value.trim().lowercase() in
+                        setOf("unknown", "unknown total", "unrecognised", "unrecognized", "?") ) {
+                        reviewReceiptTotal.value = ""
+                    }
+                }
+            )
+            OutlinedTextField(
+                value = reviewDiscountAmount.value,
+                onValueChange = { reviewDiscountAmount.value = it },
+                label = { Text("Promotional savings ($) — optional") },
+                placeholder = { Text("e.g. 8.30") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text("Enter total savings as a positive amount. Receipt total is the amount paid.",
+                style = MaterialTheme.typography.bodySmall)
+            val manuallyEnteredTotal = reviewReceiptTotal.value.trim().removePrefix("$").toDoubleOrNull()
+            if (manuallyEnteredTotal != null && kotlin.math.abs(manuallyEnteredTotal - afterDiscountTotal) > 0.02) {
+                Text("Receipt total differs from product total minus savings. Check product prices, discounts or missing items.",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall)
             }
 
             // ============================================================
@@ -1008,6 +1151,8 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.height(6.dp)
             )
 
+            }
+
             // ============================================================
             // IMPORT REVIEW - ADD MISSING PRODUCT BUTTON
             // ============================================================
@@ -1042,6 +1187,11 @@ class MainActivity : ComponentActivity() {
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary
             )
+
+            if (savings > 0.0) {
+                Text(String.format(Locale.US, "Savings: -$%.2f   Calculated paid: $%.2f", savings, afterDiscountTotal),
+                    style = MaterialTheme.typography.bodySmall)
+            }
 
             Spacer(
                 modifier = Modifier.height(4.dp)
@@ -1084,6 +1234,14 @@ class MainActivity : ComponentActivity() {
                                 fontWeight =
                                     FontWeight.SemiBold
                             )
+
+                            TextButton(onClick = {
+                                editProductName = reviewItem.productName
+                                editProductQuantity = (reviewItem.quantity ?: 1.0).toString()
+                                editProductUnitPrice = reviewItem.unitPrice?.toString() ?: ""
+                                editProductTotal = reviewItem.totalPrice?.toString() ?: ""
+                                editingReviewIndex = index
+                            }) { Text("Edit name / quantity / price") }
 
                             if (
                                 reviewItem.totalPrice != null ||
@@ -1215,7 +1373,7 @@ class MainActivity : ComponentActivity() {
 // IMPORT REVIEW - UNKNOWN CATEGORY ACTIONS
 // ============================================================
 
-                            if (reviewItem.category == HouseholdCategory.UNKNOWN) {
+                            run {
 
                                 Spacer(
                                     modifier = Modifier.height(8.dp)
@@ -1248,7 +1406,7 @@ class MainActivity : ComponentActivity() {
                                         },
                                         modifier = Modifier.weight(0.9f)
                                     ) {
-                                        Text("Food")
+                                        Text(if (reviewItem.category == HouseholdCategory.FOOD) "✓ Food" else "Food")
                                     }
                                     OutlinedButton(
                                         onClick = {
@@ -1275,7 +1433,7 @@ class MainActivity : ComponentActivity() {
                                         modifier = Modifier.weight(1.1f)
                                     ) {
                                         Text(
-                                            text = "Non-food",
+                                            text = if (reviewItem.category == HouseholdCategory.OTHER) "✓ Non-food" else "Non-food",
                                             maxLines = 1,
                                             softWrap = false
                                         )
@@ -1435,6 +1593,18 @@ class MainActivity : ComponentActivity() {
 
 
 
+                        val enteredTotalText = reviewReceiptTotal.value.trim().removePrefix("$")
+                        val enteredTotal = enteredTotalText.toDoubleOrNull()
+                        val validTotal = enteredTotalText.isBlank() || (enteredTotal != null && enteredTotal >= 0.0)
+                        val enteredSavingsText = reviewDiscountAmount.value.trim().removePrefix("$")
+                        val enteredSavings = enteredSavingsText.toDoubleOrNull()
+                        val validSavings = enteredSavingsText.isBlank() ||
+                            (enteredSavings != null && enteredSavings.isFinite() && enteredSavings >= 0.0)
+                        val validRetailer = reviewRetailerName.value.trim().isNotEmpty()
+                        if (!validTotal || !validRetailer || !validSavings) {
+                            Toast.makeText(this@MainActivity, "Enter a retailer, valid receipt total and non-negative savings.", Toast.LENGTH_LONG).show()
+                        }
+
                         val unclassifiedCount =
                             importedItemsForReview.value.count {
                                 it.category == HouseholdCategory.UNKNOWN
@@ -1452,7 +1622,7 @@ class MainActivity : ComponentActivity() {
                             parsedReceipt != null &&
                             !rawText.isNullOrBlank() &&
                             validReceiptDate &&
-                            unclassifiedCount == 0
+                            unclassifiedCount == 0 && validTotal && validRetailer && validSavings
                         ) {
 
 
@@ -1519,7 +1689,7 @@ class MainActivity : ComponentActivity() {
                                 val receipt =
                                     ReceiptEntity(
                                         storeName =
-                                            parsedReceipt.storeName,
+                                            reviewRetailerName.value.trim(),
 
 
                                         receiptDate =
@@ -1527,14 +1697,16 @@ class MainActivity : ComponentActivity() {
 
 
                                         totalAmount =
-                                            parsedReceipt.totalAmount
-                                                ?: importedItemsForReview.value.sumOf { item ->
+                                            enteredTotal ?: importedItemsForReview.value.sumOf { item ->
                                                     item.totalPrice
                                                         ?: (item.unitPrice ?: 0.0) * (item.quantity ?: 1.0)
-                                                }.takeIf { total -> total > 0.0 },
+                                                }.let { total -> (total - (enteredSavings ?: 0.0)).takeIf { it >= 0.0 } },
 
                                         rawText =
-                                            rawText,
+                                            if ((enteredSavings ?: 0.0) > 0.0)
+                                                rawText + "\n\n[PANTRYPAL_REVIEW_SAVINGS_AUD=" +
+                                                    String.format(Locale.US, "%.2f", enteredSavings) + "]"
+                                            else rawText,
 
                                         receiptNumber =
                                             parsedReceipt.receiptNumber,
@@ -1576,7 +1748,7 @@ class MainActivity : ComponentActivity() {
                                                     receiptId,
 
                                                 retailer =
-                                                    parsedReceipt.storeName,
+                                                    reviewRetailerName.value.trim(),
 
 
                                                 receiptDate =
@@ -1704,6 +1876,7 @@ class MainActivity : ComponentActivity() {
 
                                 pendingOcrReceipt.value = null
                                 pendingOcrRawText.value = null
+                                reviewDiscountAmount.value = ""
                                 importedItemsForReview.value =
                                     emptyList()
 
@@ -1939,7 +2112,12 @@ class MainActivity : ComponentActivity() {
                     }
 
                     reviewReceiptDate.value =
-                        formatReceiptDate(parsedReceipt.receiptDate)
+                        parseReceiptDateForSorting(parsedReceipt.receiptDate)
+                            ?.format(DateTimeFormatter.ofPattern("dd/MM/uuuu", Locale.ENGLISH))
+                            ?: (parsedReceipt.receiptDate ?: "")
+                    reviewRetailerName.value = parsedReceipt.storeName
+                    reviewReceiptTotal.value = parsedReceipt.totalAmount?.let { String.format(Locale.US, "%.2f", it) } ?: ""
+                reviewDiscountAmount.value = parsedReceipt.adjustments.filter { it.amount < 0.0 }.sumOf { -it.amount }.takeIf { it > 0.0 }?.let { String.format(Locale.US, "%.2f", it) } ?: ""
 
 
                     pendingOcrReceipt.value = parsedReceipt
@@ -7373,6 +7551,8 @@ class MainActivity : ComponentActivity() {
     private val importedItemsForReview =
         mutableStateOf<List<ImportReviewItem>>(emptyList())
 
+    private val reviewDiscountAmount = mutableStateOf("")
+
     private val pendingOcrReceipt =
         mutableStateOf<ParsedReceipt?>(null)
 
@@ -7409,6 +7589,9 @@ class MainActivity : ComponentActivity() {
 
     private val reviewReceiptDate =
         mutableStateOf("")
+
+    private val reviewRetailerName = mutableStateOf("")
+    private val reviewReceiptTotal = mutableStateOf("")
 
     private val addImportedProductsToInventory = mutableStateOf(true)
 
@@ -7578,9 +7761,9 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        return HouseholdCategoryResolver.resolve(
-            productName
-        )
+        return HouseholdCategoryResolver.resolve(productName).let { resolved ->
+            if (resolved == HouseholdCategory.UNKNOWN) HouseholdCategory.FOOD else resolved
+        }
     }
 
 
@@ -7886,6 +8069,17 @@ class MainActivity : ComponentActivity() {
                 Regex("""(?i)\bSept\b"""),
                 "Sep"
             )
+
+        // Australian short-year dates (e.g. 22/10/26) from paper receipts.
+        // Interpret 00-99 as 2000-2099, matching existing compact OCR dates.
+        val shortNumeric = Regex("""^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2})$""")
+            .matchEntire(normalisedValue)
+        if (shortNumeric != null) {
+            val day = shortNumeric.groupValues[1].toInt()
+            val month = shortNumeric.groupValues[2].toInt()
+            val year = 2000 + shortNumeric.groupValues[3].toInt()
+            return runCatching { LocalDate.of(year, month, day) }.getOrNull()
+        }
 
         // Existing saved values and numeric/manual entry.
         val supportedFormats = listOf(
