@@ -28,6 +28,19 @@ interface ProductDao {
     @Query("UPDATE products SET quantity = quantity - :amount WHERE id = :id")
     suspend fun subtractQuantityById(id: Int, amount: Int)
 
+    // ISO YYYY-MM-DD dates sort lexicographically; invalid/non-ISO dates are ignored.
+    @Query("""
+        UPDATE products
+        SET quantity = 0, expiryDate = NULL
+        WHERE quantity > 0
+          AND expiryDate IS NOT NULL
+          AND length(trim(expiryDate)) = 10
+          AND expiryDate GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+          AND date(expiryDate) IS NOT NULL
+          AND expiryDate < :todayIso
+    """)
+    suspend fun markExpiredStockOutOfStock(todayIso: String): Int
+
     @Query("DELETE FROM products WHERE id = :id")
     suspend fun deleteProductById(id: Int)
 
@@ -51,11 +64,16 @@ interface ProductDao {
     @Query("UPDATE products SET itemName = :newName WHERE barcode = :barcode")
     suspend fun updateProductName(barcode: String, newName: String)
 
+    @Query("SELECT * FROM products WHERE id = :id LIMIT 1")
+    suspend fun getProductById(id: Int): ProductEntity?
+
     @Query("SELECT * FROM products ORDER BY lastScanned DESC")
     suspend fun getAllProducts(): List<ProductEntity>
 
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertProduct(product: ProductEntity)
+    suspend fun insertProduct(product: ProductEntity): Long
+
 
     @Query("UPDATE products SET quantity = quantity + 1, lastScanned = :time WHERE barcode = :barcode")
     suspend fun incrementQuantity(barcode: String, time: Long)

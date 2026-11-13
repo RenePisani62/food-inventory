@@ -1,5 +1,16 @@
 package com.example.myapplication
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.mutableStateOf
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.MessageDigest
+import org.json.JSONObject
 import android.content.Intent
 import androidx.core.content.FileProvider
 import java.io.File
@@ -21,6 +32,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.room.withTransaction
 import androidx.lifecycle.lifecycleScope
 import com.example.myapplication.data.AppDatabase
 import com.example.myapplication.data.ProductEntity
@@ -61,6 +73,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import android.util.Log
 import com.example.myapplication.data.ShoppingItemEntity
+import com.example.myapplication.data.RetailerProductResolver
+import com.example.myapplication.data.RetailerAliasStore
 import com.example.myapplication.data.ProductKnowledgeResolver
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
@@ -73,6 +87,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.ui.Alignment
+import com.example.myapplication.data.ReceiptInventoryContributionEntity
 import com.example.myapplication.data.ReceiptItemEntity
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.IconButton
@@ -184,8 +199,12 @@ class MainActivity : ComponentActivity() {
 
         return true
     }
+    private var inventoryStockFilter = mutableStateOf("IN_STOCK")
+    private var inventoryFoodFilter = mutableStateOf("ALL")
+    private var inventoryCategoryRefresh = mutableLongStateOf(0L)
     private var searchText = mutableStateOf("")
     private var showClearConfirm = mutableStateOf(false)
+    private var showDeleteExpiredConfirm = mutableStateOf(false)
     private var showRebuildInventoryConfirm = mutableStateOf(false)
 
     private var selectedLocation = mutableStateOf("Pantry")
@@ -193,6 +212,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var database: AppDatabase
 
     private lateinit var prefs: SharedPreferences
+    private val retailerAliasStore by lazy { RetailerAliasStore(applicationContext) }
+
+    private fun resolvedReviewName(retailer: String, original: String): String =
+        retailerAliasStore.lookup(retailer, original) ?: original
     private val productLookup = ProductLookup()
 
     private var deleteQuantityInput = mutableStateOf("1")
@@ -528,6 +551,7 @@ class MainActivity : ComponentActivity() {
                 val fingerprint =
                     generateReceiptFingerprint(text)
 
+
                 // Primary duplicate protection:
                 // normalized PDF text fingerprint.
                 val receiptWithSameFingerprint =
@@ -584,9 +608,10 @@ class MainActivity : ComponentActivity() {
                     parsedReceipt.structuredItems.map { item ->
 
                         ImportReviewItem(
-                            productName = item.name,
-                            location = resolveStorageLocation(item.name),
-                            category = resolveHouseholdCategory(item.name),
+                            productName = resolvedReviewName(parsedReceipt.storeName, item.name),
+                            originalDescription = item.name,
+                            location = resolveStorageLocation(resolvedReviewName(parsedReceipt.storeName, item.name)),
+                            category = resolveHouseholdCategory(resolvedReviewName(parsedReceipt.storeName, item.name)),
                             quantity = item.quantity,
                             unit = item.unit,
                             unitPrice = item.unitPrice,
@@ -650,7 +675,10 @@ class MainActivity : ComponentActivity() {
 
                         val dao = database.productDao()
 
-                        dao.clearAllProducts()
+                        database.withTransaction {
+                            dao.clearAllProducts()
+                            database.receiptInventoryContributionDao().invalidateProductLinks()
+                        }
 
                         lines.drop(1).forEach { line ->
 
@@ -790,6 +818,9 @@ class MainActivity : ComponentActivity() {
                             importedItemsForReview.value = importedItemsForReview.value.mapIndexed { index, item ->
                                 if (index == editIndex) item.copy(
                                     productName = name,
+                                    manuallyCorrected = item.manuallyCorrected ||
+                                        RetailerProductResolver.normalizeDescription(name) !=
+                                        RetailerProductResolver.normalizeDescription(item.originalDescription),
                                     quantity = qty,
                                     unitPrice = unitPrice ?: lineTotal?.div(qty),
                                     totalPrice = lineTotal ?: unitPrice?.times(qty)
@@ -1723,22 +1754,24 @@ class MainActivity : ComponentActivity() {
                                             parsedReceipt.receiptSource ?: "IN_STORE"
                                     )
 
+                                val reviewedItems = importedItemsForReview.value
+
+                                val receiptId = database.withTransaction {
                                 val receiptId =
                                     database
                                         .receiptDao()
                                         .insertReceipt(receipt)
 
-                                lastImportedReceiptId.longValue =
-                                    receiptId
 
                                 // ============================================================
                                 // OCR IMPORT - SAVE REVIEWED RECEIPT ITEMS
                                 // ============================================================
 
-                                val reviewedItems =
-                                    importedItemsForReview.value
+
+                                var receiptItemIds: List<Long> = emptyList()
 
                                 if (reviewedItems.isNotEmpty()) {
+
 
                                     val entities =
                                         reviewedItems.map { item ->
@@ -1772,9 +1805,14 @@ class MainActivity : ComponentActivity() {
                                             )
                                         }
 
-                                    database
-                                        .receiptItemDao()
-                                        .insertAll(entities)
+
+
+                                    receiptItemIds =
+                                        database
+                                            .receiptItemDao()
+                                            .insertAll(entities)
+
+
                                 }
 
                                 // ============================================================
@@ -1790,27 +1828,20 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
 
+
                                 reviewedItems
-                                    .filter { item ->
+                                    .withIndex()
+                                    .filter { (_, item) ->
                                         addImportedProductsToInventory.value &&
-                                            item.category == HouseholdCategory.FOOD
+                                                item.category == HouseholdCategory.FOOD
                                     }
-                                    .forEach { item ->
+                                    .forEach { (itemIndex, item) ->
 
-                                        val inventoryQuantity =
-                                            when {
+                                        val receiptItemId =
+                                            receiptItemIds[itemIndex]
 
-                                                item.unit?.trim()?.lowercase() in setOf("kg", "g", "gram", "grams", "l", "ml") ->
-                                                    1
 
-                                                item.quantity != null ->
-                                                    item.quantity
-                                                        .toInt()
-                                                        .coerceAtLeast(1)
-
-                                                else ->
-                                                    1
-                                            }
+                                        val inventoryQuantity = receiptPurchaseUnits(item.quantity, item.unit)
 
 
                                         // Use the date confirmed during receipt review.
@@ -1819,7 +1850,7 @@ class MainActivity : ComponentActivity() {
 
                                         val purchaseDate = parsedDate
 
-                                        addOrUpdateInventoryItem(
+                                        val productId = addOrUpdateInventoryItem(
                                             productName =
                                                 item.productName,
 
@@ -1834,7 +1865,29 @@ class MainActivity : ComponentActivity() {
                                             explicitLocation =
                                                 item.location
                                         )
+                                        database.receiptInventoryContributionDao().insert(
+                                            ReceiptInventoryContributionEntity(
+                                                receiptId = receiptId,
+                                                receiptItemId = receiptItemId,
+                                                productId = productId,
+                                                quantityAdded = inventoryQuantity
+                                            )
+                                        )
                                     }
+
+                                    receiptId
+                                }
+                                lastImportedReceiptId.longValue = receiptId
+
+                                // PP-156B: learn only confirmed manual name corrections.
+                                // Do not modify historical receipt items or the contribution ledger.
+                                reviewedItems.filter { it.manuallyCorrected }.forEach { item ->
+                                    retailerAliasStore.learn(
+                                        reviewRetailerName.value.trim(),
+                                        item.originalDescription,
+                                        item.productName
+                                    )
+                                }
 
                                 // ============================================================
                                 // OCR IMPORT - COMMIT REVIEWED PREFERENCES
@@ -2133,16 +2186,17 @@ class MainActivity : ComponentActivity() {
 
                                     val category =
                                         resolveHouseholdCategory(
-                                            receiptItem.name
+                                            resolvedReviewName(parsedReceipt.storeName, receiptItem.name)
                                         )
 
                                     ImportReviewItem(
                                         productName =
-                                            receiptItem.name,
+                                            resolvedReviewName(parsedReceipt.storeName, receiptItem.name),
+                                        originalDescription = receiptItem.name,
 
                                         location =
                                             resolveStorageLocation(
-                                                receiptItem.name
+                                                resolvedReviewName(parsedReceipt.storeName, receiptItem.name)
                                             ),
 
                                         category =
@@ -2364,6 +2418,8 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
 
+            // PP-150: remove legacy generated suggestions; retain explicit shopping intent.
+            database.shoppingDao().clearAutoItems()
             val shoppingItems =
                 database.shoppingDao().getAllItems()
 
@@ -5157,6 +5213,17 @@ class MainActivity : ComponentActivity() {
 
             Spacer(modifier = Modifier.height(12.dp))
 
+            // Bulk-clear expired stock only; retain product records and shopping history.
+            OutlinedButton(
+                onClick = { showDeleteExpiredConfirm.value = true },
+                enabled = expirySummary.value.second > 0,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("🗑️  Remove All Expired Stock (${expirySummary.value.second})")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
             OutlinedButton(
                 onClick = {
                     showClearConfirm.value = true
@@ -5189,6 +5256,44 @@ class MainActivity : ComponentActivity() {
 
 
 // ============================================================
+// REMOVE EXPIRED STOCK CONFIRMATION
+// ============================================================
+            if (showDeleteExpiredConfirm.value) {
+                AlertDialog(
+                    onDismissRequest = { showDeleteExpiredConfirm.value = false },
+                    title = { Text("Remove all expired stock?") },
+                    text = {
+                        Text("${expirySummary.value.second} expired inventory records will be marked out of stock. " +
+                            "Other inventory and receipt history will be retained. " +
+                            "Shopping-list items will be refreshed.")
+                    },
+                    confirmButton = {
+                        Button(onClick = {
+                            showDeleteExpiredConfirm.value = false
+                            lifecycleScope.launch {
+                                val affected = database.productDao().markExpiredStockOutOfStock(
+                                    LocalDate.now().toString()
+                                )
+                                refreshProducts()
+                                expirySummary.value = getExpirySummary()
+                                refreshShoppingList()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "$affected expired inventory records removed from stock.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }) { Text("Remove expired stock") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showDeleteExpiredConfirm.value = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+
+// ============================================================
 // CLEAR INVENTORY CONFIRMATION
 // ============================================================
 
@@ -5218,8 +5323,11 @@ class MainActivity : ComponentActivity() {
 
                                 lifecycleScope.launch {
 
-                                    database.productDao().clearAllProducts()
-                                    database.shoppingDao().clearAll()
+                                    database.withTransaction {
+                                        database.productDao().clearAllProducts()
+                                        database.receiptInventoryContributionDao().invalidateProductLinks()
+                                        database.shoppingDao().clearAll()
+                                    }
 
                                     refreshProducts()
 
@@ -5256,102 +5364,79 @@ class MainActivity : ComponentActivity() {
 // ============================================================
 
             if (showRebuildInventoryConfirm.value) {
-
                 AlertDialog(
-                    onDismissRequest = {
-                        showRebuildInventoryConfirm.value = false
-                    },
-
-                    title = {
-                        Text("Rebuild inventory?")
-                    },
-
+                    onDismissRequest = { showRebuildInventoryConfirm.value = false },
+                    title = { Text("Replace inventory from receipts?") },
                     text = {
-
                         Text(
-                            "PantryPal will rebuild your inventory using food " +
-                                    "products found in your retained receipt history.\n\n" +
-                                    "Recovered quantities will be set to 1 because " +
-                                    "receipt history cannot determine what has since " +
-                                    "been consumed or removed.\n\n" +
-                                    "Some recovered products may therefore no longer " +
-                                    "be in stock."
+                            "This recovery operation REPLACES all current inventory " +
+                                "with products originally added from saved receipts. " +
+                                "Manually added products, stock adjustments and current " +
+                                "expiry dates will be lost. Receipt history and your " +
+                                "shopping list will be retained.\n\n" +
+                                "Purchased quantities will be restored, but PantryPal " +
+                                "cannot know what has since been consumed or removed. " +
+                                "Only use this to recover inventory from receipt history."
                         )
                     },
-
                     confirmButton = {
-
-                        Button(
-                            onClick = {
-
-                                lifecycleScope.launch {
-
-                                    val receiptItems =
-                                        database
-                                            .receiptItemDao()
-                                            .getAllItems()
-
-                                    val latestFoodItems =
-                                        receiptItems
-                                            .asReversed()
-                                            .filter { receiptItem ->
-
-                                                resolveHouseholdCategory(
-                                                    receiptItem.productName
-                                                ) == HouseholdCategory.FOOD
-                                            }
-                                            .distinctBy { receiptItem ->
-
-                                                receiptItem
-                                                    .productName
-                                                    .trim()
-                                                    .lowercase()
-                                            }
-
-                                    latestFoodItems.forEach { receiptItem ->
-
-                                        val purchaseDate =
-                                            parseReceiptDateForSorting(receiptItem.receiptDate)
-
-                                        addOrUpdateInventoryItem(
-                                            productName =
-                                                receiptItem.productName,
-
-                                            quantity = 1,
-
-                                            barcode = "",
-
-                                            purchaseDate =
-                                                purchaseDate
-                                        )
+                        Button(onClick = {
+                            showRebuildInventoryConfirm.value = false
+                            lifecycleScope.launch {
+                                try {
+                                    val allReceiptItems = database.receiptItemDao().getAllItems()
+                                    val allContributions = database.receiptInventoryContributionDao().getAll()
+                                    val itemById = allReceiptItems.associateBy { it.id }
+                                    val recoverable = allContributions.mapNotNull { contribution ->
+                                        itemById[contribution.receiptItemId]?.let { item ->
+                                            contribution to item
+                                        }
                                     }
-
+                                    if (recoverable.isEmpty()) {
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "No receipt-linked inventory contributions found. Inventory was not changed.",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                        return@launch
+                                    }
+                                    val distinctProducts = recoverable.map { it.second.productName.trim().lowercase(Locale.ROOT) }.toSet().size
+                                    val totalUnits = recoverable.sumOf { it.first.quantityAdded.toLong() }
+                                    database.withTransaction {
+                                        database.productDao().clearAllProducts()
+                                        database.receiptInventoryContributionDao().deleteAll()
+                                        recoverable.forEach { (contribution, item) ->
+                                            val productId = addOrUpdateInventoryItem(
+                                                productName = item.productName,
+                                                quantity = contribution.quantityAdded,
+                                                barcode = "",
+                                                purchaseDate = parseReceiptDateForSorting(item.receiptDate)
+                                            )
+                                            database.receiptInventoryContributionDao().insert(
+                                                contribution.copy(id = 0, productId = productId)
+                                            )
+                                        }
+                                    }
                                     refreshProducts()
-
-                                    expirySummary.value =
-                                        getExpirySummary()
-
-                                    showRebuildInventoryConfirm.value = false
-
+                                    expirySummary.value = getExpirySummary()
                                     Toast.makeText(
                                         this@MainActivity,
-                                        "Inventory rebuilt from receipt history.",
+                                        "Recovered $distinctProducts products and $totalUnits receipt-linked units.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } catch (e: Exception) {
+                                    Log.e("PantryPalInventory", "Receipt inventory rebuild failed", e)
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Rebuild failed; inventory was not replaced: ${e.message ?: "Unknown error"}",
                                         Toast.LENGTH_LONG
                                     ).show()
                                 }
                             }
-                        ) {
-                            Text("Rebuild")
-                        }
+                        }) { Text("Replace inventory") }
                     },
-
                     dismissButton = {
-
-                        Button(
-                            onClick = {
-                                showRebuildInventoryConfirm.value = false
-                            }
-                        ) {
+                        TextButton(onClick = { showRebuildInventoryConfirm.value = false }) {
                             Text("Cancel")
                         }
                     }
@@ -5359,18 +5444,116 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    // PP-154: Barcode-only image lookup; never guess an exact product from a receipt name.
+    // Android's cacheDir keeps downloaded thumbnails off the Room database.
+    private suspend fun loadProductThumbnail(barcode: String): Bitmap? =
+        withContext(Dispatchers.IO) {
+            val code = barcode.trim()
+            if (!code.matches(Regex("[0-9]{8,14}"))) return@withContext null
+            val cacheKey = MessageDigest.getInstance("SHA-256")
+                .digest(code.toByteArray()).joinToString("") { "%02x".format(it) }
+            val cached = File(cacheDir, "pp_product_$cacheKey.jpg")
+            try {
+                if (cached.exists()) return@withContext BitmapFactory.decodeFile(cached.path)
+                val api = URL("https://world.openfoodfacts.org/api/v2/product/$code.json?fields=status,code,image_front_small_url,image_front_url")
+                val connection = (api.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                    setRequestProperty("User-Agent", "PantryPal/1.0 (Android; product-image-lookup)")
+                }
+                val response = try {
+                    if (connection.responseCode != 200) return@withContext null
+                    connection.inputStream.bufferedReader().use { it.readText() }
+                } finally { connection.disconnect() }
+                val json = JSONObject(response)
+                if (json.optInt("status") != 1) return@withContext null
+                val item = json.optJSONObject("product") ?: return@withContext null
+                val imageUrl = item.optString("image_front_small_url")
+                    .ifBlank { item.optString("image_front_url") }
+                if (!imageUrl.startsWith("https://")) return@withContext null
+                val imageConnection = (URL(imageUrl).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                }
+                val bytes = try {
+                    if (imageConnection.responseCode != 200) return@withContext null
+                    imageConnection.inputStream.use { it.readBytes() }
+                } finally { imageConnection.disconnect() }
+                if (bytes.size > 2_000_000) return@withContext null
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    ?: return@withContext null
+                cached.writeBytes(bytes)
+                bitmap
+            } catch (_: Exception) { null }
+        }
+
+    // PP-156F: classify the primary product, not an incidental flavour or brand.
+    // Emoji are illustrations, not verified catalogue photographs. In particular,
+    // Unicode has no dedicated blackberry or raspberry emoji: do not show a blueberry.
+    private fun productCategorySymbol(name: String): String =
+        com.example.myapplication.data.ProductVisualClassifier.symbol(name)
+
+    @Composable
+    private fun InventoryThumbnail(product: ProductEntity) {
+        val bitmap by produceState<Bitmap?>(initialValue = null, key1 = product.barcode) {
+            value = loadProductThumbnail(product.barcode)
+        }
+        Surface(
+            modifier = Modifier.size(86.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        ) {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap!!.asImageBitmap(),
+                    contentDescription = "Product image for ${product.itemName}",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize().padding(4.dp)
+                )
+            } else {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Text(productCategorySymbol(product.itemName),
+                        style = MaterialTheme.typography.headlineLarge)
+                }
+            }
+        }
+    }
+
     @Composable
     private fun InventoryScreen() {
-        val filteredProducts = products.filter { product ->
-
-            product.itemName.contains(
-                searchText.value,
-                ignoreCase = true
-            ) ||
-                    product.barcode.contains(
-                        searchText.value,
-                        ignoreCase = true
-                    )
+        // Load learned classifications asynchronously; saved corrections override heuristics.
+        val categoryRefresh = inventoryCategoryRefresh.longValue
+        val productNames = products.map { it.itemName }.distinct()
+        var categoryByName by remember { mutableStateOf<Map<String, HouseholdCategory>>(emptyMap()) }
+        LaunchedEffect(productNames, categoryRefresh) {
+            categoryByName = withContext(Dispatchers.IO) {
+                productNames.associateWith { name -> resolveHouseholdCategory(name) }
+            }
+        }
+        fun categoryFor(product: ProductEntity): HouseholdCategory =
+            categoryByName[product.itemName]
+                ?: HouseholdCategoryResolver.resolve(product.itemName)
+        val categoryFiltered = products.filter { product ->
+            when (inventoryFoodFilter.value) {
+                "FOOD" -> categoryFor(product) == HouseholdCategory.FOOD
+                "NON_FOOD" -> categoryFor(product) == HouseholdCategory.OTHER
+                else -> true
+            }
+        }
+        val inStockCount = categoryFiltered.count { it.quantity > 0 }
+        val outOfStockCount = categoryFiltered.count { it.quantity <= 0 }
+        val allCount = categoryFiltered.size
+        val filteredProducts = categoryFiltered.filter { product ->
+            val matchesStock = when (inventoryStockFilter.value) {
+                "IN_STOCK" -> product.quantity > 0
+                "OUT_OF_STOCK" -> product.quantity <= 0
+                else -> true
+            }
+            matchesStock && (
+                product.itemName.contains(searchText.value, ignoreCase = true) ||
+                    product.barcode.contains(searchText.value, ignoreCase = true)
+            )
         }
 
         Column(
@@ -5380,87 +5563,96 @@ class MainActivity : ComponentActivity() {
                 .padding(bottom = 80.dp)
         ) {
 
-            // ============================================================
-// INVENTORY - PANTRYPAL HEADER
-// ============================================================
-
-            Text(
-                text = "PantryPal",
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Text(
-                text = "Inventory",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Text(
-                text = "Search and manage your household items",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(20.dp))
-            TextButton(
-                onClick = {
-                    currentScreen.value = "HOME"
-                    searchText.value = ""
-                }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "‹ Back to Home",
-                    fontWeight = FontWeight.SemiBold
-                )
+                Text("PantryPal", style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                Text("Inventory", style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold)
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = {
+                    currentScreen.value = "HOME"
+                    searchText.value = ""
+                }) { Text("‹ Back to Home") }
+                if (searchText.value.isNotBlank()) {
+                    Text("${filteredProducts.size} matches", style = MaterialTheme.typography.bodySmall)
+                }
+            }
 
-            TextField(
+            OutlinedTextField(
                 value = searchText.value,
-                onValueChange = {
-                    searchText.value = it
-                },
+                onValueChange = { searchText.value = it },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                placeholder = {
-                    Text(
-                        text = "Search inventory",
-                        maxLines = 1
-                    )
-                },
+                placeholder = { Text("Search inventory") },
                 trailingIcon = {
-
                     if (searchText.value.isNotBlank()) {
-
-                        IconButton(
-                            onClick = {
-                                searchText.value = ""
-                            }
-                        ) {
-                            Text(
-                                text = "×",
-                                style = MaterialTheme.typography.headlineSmall
-                            )
-                        }
+                        IconButton(onClick = { searchText.value = "" }) { Text("×") }
                     }
                 }
             )
 
-            Text(
-                text = "Matches: ${filteredProducts.size}",
-                style = MaterialTheme.typography.bodySmall
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                listOf(
+                    Triple("IN_STOCK", "In Stock", inStockCount),
+                    Triple("OUT_OF_STOCK", "Out of Stock", outOfStockCount),
+                    Triple("ALL", "All", allCount)
+                ).forEach { (filter, label, count) ->
+                    val selected = inventoryStockFilter.value == filter
+                    Surface(
+                        modifier = Modifier.weight(1f)
+                            .clickable { inventoryStockFilter.value = filter },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (selected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp, horizontal = 2.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(label, maxLines = 2, softWrap = true,
+                                textAlign = TextAlign.Center,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (selected) MaterialTheme.colorScheme.onPrimary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = FontWeight.Bold)
+                            Text("$count", maxLines = 1, softWrap = false,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (selected) MaterialTheme.colorScheme.onPrimary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("ALL" to "All", "FOOD" to "Food", "NON_FOOD" to "Non-food")
+                    .forEach { (key, label) ->
+                        FilterChip(
+                            selected = inventoryFoodFilter.value == key,
+                            onClick = { inventoryFoodFilter.value = key },
+                            label = { Text(label, maxLines = 1, softWrap = false,
+                                style = MaterialTheme.typography.labelSmall) },
+                            modifier = Modifier.weight(if (key == "NON_FOOD") 1.45f else 0.8f)
+                        )
+                    }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
 
             LazyColumn(
                 modifier = Modifier.weight(1f),
@@ -5490,91 +5682,66 @@ class MainActivity : ComponentActivity() {
                     ) {
 
                         Column(
-                            modifier = Modifier.padding(16.dp)
+                            modifier = Modifier.padding(12.dp)
                         ) {
-
-                            Text(
-                                text = product.itemName,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-
-                            Spacer(
-                                modifier = Modifier.height(8.dp)
-                            )
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement =
-                                    Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.Top
                             ) {
-
-                                Column {
-
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "Location",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color =
-                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        text = product.itemName,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
                                     )
-
+                                    Spacer(modifier = Modifier.height(6.dp))
                                     Text(
-                                        text = product.location,
+                                        text = "${product.location}  ·  Qty ${product.quantity}",
                                         style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.SemiBold
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
-                                }
-
-                                Column(
-                                    horizontalAlignment = Alignment.End
-                                ) {
-
+                                    Spacer(modifier = Modifier.height(6.dp))
                                     Text(
-                                        text = "Quantity",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color =
-                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        text = "Expiry: $expiryText",
+                                        style = MaterialTheme.typography.bodySmall
                                     )
-
-                                    Text(
-                                        text = product.quantity.toString(),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    if (statusText.isNotBlank()) {
+                                        Text(
+                                            text = statusText,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (statusText.contains("expired", ignoreCase = true))
+                                                MaterialTheme.colorScheme.error
+                                            else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
+                                InventoryThumbnail(product)
                             }
-
-                            Spacer(
-                                modifier = Modifier.height(8.dp)
-                            )
-
-                            Text(
-                                text = "Expiry: $expiryText",
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-
-                            if (statusText.isNotBlank()) {
-
-                                Spacer(
-                                    modifier = Modifier.height(2.dp)
-                                )
-
-                                Text(
-                                    text = statusText,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color =
-                                        if (
-                                            statusText.contains(
-                                                "expired",
-                                                ignoreCase = true
+                            TextButton(onClick = {
+                                lifecycleScope.launch {
+                                    val description = product.itemName.trim()
+                                    val key = description.lowercase()
+                                    val existing = database.shoppingDao().findByDescription(key)
+                                    if (existing == null) {
+                                        database.shoppingDao().insertItem(
+                                            ShoppingItemEntity(
+                                                description = description,
+                                                normalisedDescription = key,
+                                                source = "MANUAL"
                                             )
-                                        ) {
-                                            MaterialTheme.colorScheme.error
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        }
-                                )
-                            }
+                                        )
+                                    }
+                                    refreshShoppingList()
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        if (existing == null) "Added to shopping list" else "Already on shopping list",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }) { Text("Add to shopping list") }
 
                             if (product.barcode.isNotBlank()) {
 
@@ -5600,266 +5767,153 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun ProductDetailScreen() {
-
         val product = editingProduct.value
-
-        var showDeleteConfirmation by remember {
-            mutableStateOf(false)
+        var showDeleteConfirmation by remember { mutableStateOf(false) }
+        var selectedDetailLocation by remember(product?.id) {
+            mutableStateOf(product?.location ?: "Pantry")
+        }
+        var detailExpiryText by remember(product?.id) {
+            mutableStateOf(product?.expiryDate ?: "")
+        }
+        var detailQuantityText by remember(product?.id) {
+            mutableStateOf(product?.quantity?.toString() ?: "0")
+        }
+        var detailCategory by remember(product?.id) {
+            mutableStateOf(HouseholdCategory.UNKNOWN)
+        }
+        LaunchedEffect(product?.id) {
+            if (product != null) {
+                detailCategory = withContext(Dispatchers.IO) {
+                    resolveHouseholdCategory(product.itemName)
+                }
+            }
         }
 
         if (product == null) {
-
             currentScreen.value = "INVENTORY"
             return
         }
 
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp)
-                .padding(bottom = 80.dp)
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                .padding(16.dp).padding(bottom = 80.dp)
         ) {
+            Text("PantryPal", style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            Text("Product details", style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold)
+            TextButton(onClick = {
+                editingProduct.value = null
+                currentScreen.value = "INVENTORY"
+            }) { Text("‹ Back to Inventory") }
 
-            // ============================================================
-            // PRODUCT DETAIL - PANTRYPAL HEADER
-            // ============================================================
-
-            Text(
-                text = "PantryPal",
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Text(
-                text = "Product details",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Text(
-                text = "View and manage this inventory item",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            TextButton(
-                onClick = {
-                    editingProduct.value = null
-                    navigateBack()
-                }
-            ) {
-                Text(
-                    text = "‹ Back to Inventory",
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // ============================================================
-// PRODUCT DETAILS CARD
-// ============================================================
-
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant
-            ) {
-
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-
-                    Text(
-                        text = "Product",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = "Product name",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
+            Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant) {
+                Column(modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
                         value = editNameInput.value,
-
-                        onValueChange = {
-                            editNameInput.value = it
-                        },
-
-                        modifier = Modifier.fillMaxWidth()
+                        onValueChange = { editNameInput.value = it },
+                        label = { Text("Product name") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth()
                     )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Button(
-                        onClick = {
-
-                            lifecycleScope.launch {
-
-                                database.productDao().updateProductNameById(
-                                    product.id,
-                                    editNameInput.value
-                                )
-
-                                refreshProducts()
-                            }
-                        },
-
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Save Product Name")
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-// ============================================================
-// QUANTITY CARD
-// ============================================================
-
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant
-            ) {
-
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-
-                    Text(
-                        text = "Quantity",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Text(
-                        text = "Current quantity",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(2.dp))
-
-                    Text(
-                        text = product.quantity.toString(),
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
                     OutlinedTextField(
-                        value = deleteQuantityInput.value,
-
-                        onValueChange = {
-                            deleteQuantityInput.value = it
-                        },
-
-                        label = {
-                            Text("Quantity")
-                        },
-
-                        modifier = Modifier.fillMaxWidth()
+                        value = detailQuantityText,
+                        onValueChange = { detailQuantityText = it },
+                        label = { Text("Quantity in stock") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true, modifier = Modifier.fillMaxWidth()
                     )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Button(
-                        onClick = {
-
-                            val amount =
-                                deleteQuantityInput.value.toIntOrNull() ?: 0
-
-                            lifecycleScope.launch {
-
-                                database.productDao().updateQuantityById(
-                                    product.id,
-                                    amount
-                                )
-
-                                editingProduct.value =
-                                    product.copy(
-                                        quantity = amount
-                                    )
-
-                                refreshProducts()
-
-                                expirySummary.value =
-                                    getExpirySummary()
-                            }
-                        },
-
-                        modifier = Modifier.fillMaxWidth()
+                    Text("Product classification", style = MaterialTheme.typography.titleSmall)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Set Quantity")
+                        listOf(
+                            HouseholdCategory.FOOD to "Food",
+                            HouseholdCategory.OTHER to "Non-food"
+                        ).forEach { (category, label) ->
+                            FilterChip(
+                                selected = (detailCategory == HouseholdCategory.FOOD) == (category == HouseholdCategory.FOOD) &&
+                                    detailCategory != HouseholdCategory.UNKNOWN,
+                                onClick = { detailCategory = category },
+                                label = { Text(label, maxLines = 1) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    OutlinedButton(
-                        onClick = {
-
-                            val amount =
-                                deleteQuantityInput.value.toIntOrNull() ?: 1
-
-                            lifecycleScope.launch {
-
-                                val newQuantity =
-                                    if (product.quantity <= amount) {
-                                        0
-                                    } else {
-                                        product.quantity - amount
+                    Text("Classification is saved with the other changes.",
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("Storage location", style = MaterialTheme.typography.titleSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("Pantry", "Fridge", "Freezer").forEach { location ->
+                            FilterChip(
+                                selected = selectedDetailLocation == location,
+                                onClick = {
+                                    if (selectedDetailLocation != location) {
+                                        selectedDetailLocation = location
+                                        val knowledge = ProductKnowledgeResolver.resolve(
+                                            editNameInput.value.trim().ifBlank { product.itemName }
+                                        )
+                                        val shelfDays = if (location == "Freezer")
+                                            maxOf(knowledge.suggestedShelfLifeDays, 365)
+                                        else knowledge.suggestedShelfLifeDays
+                                        detailExpiryText = LocalDate.now()
+                                            .plusDays(shelfDays.toLong()).toString()
                                     }
-
-                                database.productDao()
-                                    .updateQuantityById(
-                                        product.id,
-                                        newQuantity
-                                    )
-
-                                editingProduct.value =
-                                    product.copy(
-                                        quantity = newQuantity
-                                    )
-
-                                refreshProducts()
-
-                                expirySummary.value =
-                                    getExpirySummary()
-                                expirySummary.value =
-                                    getExpirySummary()
-                            }
-                        },
-
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Remove Quantity")
+                                },
+                                label = { Text(location, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
                     }
+                    OutlinedTextField(
+                        value = detailExpiryText,
+                        onValueChange = { detailExpiryText = it },
+                        label = { Text("Expiry (YYYY-MM-DD)") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("Changing storage updates the suggested expiry. You can edit it before saving.",
+                        style = MaterialTheme.typography.bodySmall)
                 }
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(
+                onClick = {
+                    val name = editNameInput.value.trim()
+                    val quantity = detailQuantityText.trim().toIntOrNull()
+                    val expiry = detailExpiryText.trim().ifBlank { null }
+                    val validExpiry = expiry == null || try {
+                        LocalDate.parse(expiry); true
+                    } catch (_: Exception) { false }
+                    when {
+                        name.isBlank() -> Toast.makeText(this@MainActivity,
+                            "Enter a product name", Toast.LENGTH_LONG).show()
+                        quantity == null || quantity < 0 -> Toast.makeText(this@MainActivity,
+                            "Enter a non-negative whole-number quantity", Toast.LENGTH_LONG).show()
+                        !validExpiry -> Toast.makeText(this@MainActivity,
+                            "Enter an expiry date as YYYY-MM-DD", Toast.LENGTH_LONG).show()
+                        else -> lifecycleScope.launch {
+                            database.withTransaction {
+                                database.productDao().updateProductNameById(product.id, name)
+                                database.productDao().updateQuantityById(product.id, quantity)
+                                database.productDao().updateLocationById(product.id, selectedDetailLocation)
+                                database.productDao().updateExpiryDateById(product.id,
+                                    if (quantity == 0) null else expiry)
+                            }
+                            if (detailCategory != HouseholdCategory.UNKNOWN) {
+                                saveCategoryPreference(name, detailCategory)
+                            }
+                            inventoryCategoryRefresh.longValue++
+                            refreshProducts()
+                            expirySummary.value = getExpirySummary()
+                            editingProduct.value = null
+                            currentScreen.value = "INVENTORY"
+                            Toast.makeText(this@MainActivity, "Product saved", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }, modifier = Modifier.fillMaxWidth()
+            ) { Text("Save Changes") }
+            Spacer(modifier = Modifier.height(20.dp))
 // ============================================================
 // PERMANENT DELETE
 // ============================================================
@@ -5958,6 +6012,29 @@ class MainActivity : ComponentActivity() {
     }
     @Composable
     private fun ShoppingListScreen() {
+        var showClearShoppingConfirmation by remember { mutableStateOf(false) }
+
+        if (showClearShoppingConfirmation) {
+            AlertDialog(
+                onDismissRequest = { showClearShoppingConfirmation = false },
+                title = { Text("Clear shopping list?") },
+                text = { Text("Remove every shopping-list entry, including checked items? Inventory and receipts will not be changed.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showClearShoppingConfirmation = false
+                        lifecycleScope.launch {
+                            database.shoppingDao().clearAll()
+                            refreshShoppingList()
+                            checkedShoppingItems.value = emptySet()
+                            Toast.makeText(this@MainActivity, "Shopping list cleared", Toast.LENGTH_SHORT).show()
+                        }
+                    }) { Text("Clear list") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showClearShoppingConfirmation = false }) { Text("Cancel") }
+                }
+            )
+        }
 
         Column(
             modifier = Modifier
@@ -5989,13 +6066,6 @@ class MainActivity : ComponentActivity() {
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            Text(
-                text = "Keep track of items that need replacing",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
 
             TextButton(
                 onClick = {
@@ -6008,7 +6078,13 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = { showClearShoppingConfirmation = true },
+                enabled = shoppingListItems.value.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Clear Shopping List") }
+
+            Spacer(modifier = Modifier.height(8.dp))
 
             // ============================================================
 // SHOPPING LIST - MANUAL ADD CARD
@@ -6032,13 +6108,6 @@ class MainActivity : ComponentActivity() {
 
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    Text(
-                        text = "Add something to your shopping list manually",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
 
                     OutlinedTextField(
                         value = manualShoppingItemInput.value,
@@ -6054,7 +6123,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
 
                     Button(
                         onClick = {
@@ -6106,10 +6175,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             if (shoppingListItems.value.isEmpty()) {
 
@@ -6195,9 +6261,7 @@ class MainActivity : ComponentActivity() {
                                 }
                             )
 
-                            Spacer(
-                                modifier = Modifier.width(8.dp)
-                            )
+                            Spacer(modifier = Modifier.width(2.dp))
 
                             Column(
                                 modifier = Modifier.weight(1f)
@@ -6205,7 +6269,7 @@ class MainActivity : ComponentActivity() {
 
                                 Text(
                                     text = productName,
-                                    style = MaterialTheme.typography.titleMedium,
+                                    style = MaterialTheme.typography.bodyLarge,
                                     fontWeight = FontWeight.SemiBold
                                 )
 
@@ -6217,7 +6281,7 @@ class MainActivity : ComponentActivity() {
 
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
 
                                         OutlinedButton(
@@ -6239,7 +6303,7 @@ class MainActivity : ComponentActivity() {
                                             },
                                             enabled = shoppingEntity.quantity > 1
                                         ) {
-                                            Text("−")
+                                            Text("−", style = MaterialTheme.typography.bodyMedium)
                                         }
 
                                         Text(
@@ -6263,7 +6327,7 @@ class MainActivity : ComponentActivity() {
                                                 }
                                             }
                                         ) {
-                                            Text("+")
+                                            Text("+", style = MaterialTheme.typography.bodyMedium)
                                         }
                                     }
                                 }
@@ -6590,14 +6654,9 @@ class MainActivity : ComponentActivity() {
 
                                 lifecycleScope.launch {
 
-                                    database
-                                        .receiptItemDao()
-                                        .deleteForReceipt(receipt.id.toLong())
-
-                                    database
-                                        .receiptDao()
-                                        .deleteReceiptById(receipt.id)
-
+                                    deleteReceiptsWithInventory(listOf(receipt.id))
+                                    refreshProducts()
+                                    expirySummary.value = getExpirySummary()
                                     refreshReceipts()
                                 }
                             },
@@ -6657,17 +6716,16 @@ class MainActivity : ComponentActivity() {
                         Text("Delete Receipts")
                     },
                     text = {
-                        Text("Delete all imported receipts? Inventory quantities will not be reduced or reversed.")
+                        Text("Delete all imported receipts and subtract their recorded inventory contributions?")
                     },
                     confirmButton = {
                         Button(
                             onClick = {
                                 lifecycleScope.launch {
 
-                                    database.receiptItemDao().deleteAll()
-
-                                    database.receiptDao().deleteAllReceipts()
-
+                                    deleteReceiptsWithInventory(database.receiptDao().getAllReceipts().map { it.id })
+                                    refreshProducts()
+                                    expirySummary.value = getExpirySummary()
                                     refreshReceipts()
 
                                     showClearReceiptsDialog.value = false
@@ -6785,16 +6843,9 @@ class MainActivity : ComponentActivity() {
 
                             lifecycleScope.launch {
 
-                                selectedReceiptIds.value.forEach { receiptId ->
-
-                                    database
-                                        .receiptItemDao()
-                                        .deleteForReceipt(receiptId.toLong())
-
-                                    database
-                                        .receiptDao()
-                                        .deleteReceiptById(receiptId)
-                                }
+                                deleteReceiptsWithInventory(selectedReceiptIds.value)
+                                refreshProducts()
+                                expirySummary.value = getExpirySummary()
 
                                 selectedReceiptIds.value = emptySet()
 
@@ -6991,8 +7042,9 @@ class MainActivity : ComponentActivity() {
 
                         onDelete = {
                             lifecycleScope.launch {
-                                database.receiptItemDao().deleteForReceipt(receipt.id.toLong())
-                                database.receiptDao().deleteReceiptById(receipt.id)
+                                deleteReceiptsWithInventory(listOf(receipt.id))
+                                refreshProducts()
+                                expirySummary.value = getExpirySummary()
                                 archiveSelectedIds = archiveSelectedIds - receipt.id
                                 refreshReceipts()
                             }
@@ -7015,14 +7067,13 @@ class MainActivity : ComponentActivity() {
             AlertDialog(
                 onDismissRequest = { showArchiveDeleteConfirm = false },
                 title = { Text("Delete archived receipts?") },
-                text = { Text("Delete ${archiveSelectedIds.size} receipt(s) and their purchase history? Inventory quantities will not change.") },
+                text = { Text("Delete ${archiveSelectedIds.size} receipt(s), their purchase history, and subtract recorded inventory contributions?") },
                 confirmButton = {
                     TextButton(onClick = {
                         lifecycleScope.launch {
-                            archiveSelectedIds.forEach { id ->
-                                database.receiptItemDao().deleteForReceipt(id.toLong())
-                                database.receiptDao().deleteReceiptById(id)
-                            }
+                            deleteReceiptsWithInventory(archiveSelectedIds)
+                            refreshProducts()
+                            expirySummary.value = getExpirySummary()
                             archiveSelectedIds = emptySet()
                             archiveSelectionMode = false
                             showArchiveDeleteConfirm = false
@@ -7034,6 +7085,32 @@ class MainActivity : ComponentActivity() {
                     TextButton(onClick = { showArchiveDeleteConfirm = false }) { Text("Cancel") }
                 }
             )
+        }
+    }
+
+    // PP-148: Reconcile receipt-linked stock and history atomically.
+    private suspend fun deleteReceiptsWithInventory(receiptIds: Collection<Int>) {
+        database.withTransaction {
+            val productDao = database.productDao()
+            val contributionDao = database.receiptInventoryContributionDao()
+            receiptIds.distinct().forEach { receiptId ->
+                val contributions = contributionDao.getForReceipt(receiptId.toLong())
+                contributions.groupBy { it.productId }.forEach { (productId, entries) ->
+                    val product = productDao.getProductById(productId)
+                    if (product != null) {
+                        val contributed = entries.sumOf { it.quantityAdded.toLong() }
+                        val newQuantity = (product.quantity.toLong() - contributed)
+                            .coerceAtLeast(0L).toInt()
+                        productDao.updateQuantityById(productId, newQuantity)
+                        if (newQuantity == 0) {
+                            productDao.updateExpiryDateById(productId, null)
+                        }
+                    }
+                }
+                contributionDao.deleteForReceipt(receiptId.toLong())
+                database.receiptItemDao().deleteForReceipt(receiptId.toLong())
+                database.receiptDao().deleteReceiptById(receiptId)
+            }
         }
     }
 
@@ -7539,6 +7616,8 @@ class MainActivity : ComponentActivity() {
 
     private data class ImportReviewItem(
         val productName: String,
+        val originalDescription: String = productName,
+        val manuallyCorrected: Boolean = false,
         val location: String,
         val category: HouseholdCategory,
         val quantity: Double?,
@@ -7745,6 +7824,17 @@ class MainActivity : ComponentActivity() {
                 .productCategoryPreferenceDao()
                 .getPreference(productKey)
 
+// PP-155 TEMPORARY CATEGORY DIAGNOSTIC
+        if (productName.contains("ZYMIL", ignoreCase = true)) {
+            Log.d(
+                "PantryPalCategory",
+                "Product=$productName | " +
+                        "preferenceKey=$productKey | " +
+                        "savedCategory=${learnedPreference?.category} | " +
+                        "resolverCategory=${HouseholdCategoryResolver.resolve(productName)}"
+            )
+        }
+
         if (learnedPreference != null) {
 
             return try {
@@ -7797,7 +7887,7 @@ class MainActivity : ComponentActivity() {
         purchaseDate: LocalDate? = null,
         explicitExpiry: String? = null,
         explicitLocation: String? = null
-    ) {
+    ): Int {
 
         val dao =
             database.productDao()
@@ -7850,7 +7940,9 @@ class MainActivity : ComponentActivity() {
                 dao.getProductByName(productName)
             }
 
-        if (existing != null) {
+
+        return if (existing != null) {
+
 
             dao.updateQuantityById(
                 existing.id,
@@ -7871,6 +7963,7 @@ class MainActivity : ComponentActivity() {
                     resolvedExpiry
                 )
             }
+            existing.id
 
         } else {
 
@@ -7884,7 +7977,7 @@ class MainActivity : ComponentActivity() {
                     location = resolvedLocation
                 )
 
-            dao.insertProduct(newProduct)
+            dao.insertProduct(newProduct).toInt()
         }
     }
     private fun generateReceiptFingerprint(
@@ -8177,59 +8270,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private suspend fun refreshShoppingList() {
-
-        // Generate the shopping requirements from CURRENT inventory.
-        val generatedItems =
-            generateShoppingList()
-
-        // AUTO entries are derived from inventory.
-        // Remove the old derived entries before rebuilding them.
-        // MANUAL entries are preserved.
+        // PP-150: shopping entries represent explicit purchasing intent only.
+        // Legacy AUTO entries are discarded; manually requested items are retained.
         database.shoppingDao().clearAutoItems()
-
-        generatedItems.forEach { generatedItem ->
-
-            val normalisedDescription =
-                generatedItem
-                    .lowercase()
-                    .trim()
-
-            val existing =
-                database.shoppingDao()
-                    .findByDescription(
-                        normalisedDescription
-                    )
-
-            // A MANUAL item with the same description may already exist.
-            // In that case, do not create a duplicate AUTO entry.
-            if (existing == null) {
-
-                database.shoppingDao().insertItem(
-
-                    ShoppingItemEntity(
-
-                        description =
-                            generatedItem,
-
-                        normalisedDescription =
-                            normalisedDescription,
-
-                        source = "AUTO"
-                    )
-                )
-            }
-        }
-
-        val shoppingItems =
-            database.shoppingDao().getAllItems()
-
-        shoppingListEntities.value =
-            shoppingItems
-
-        shoppingListItems.value =
-            shoppingItems
-                .map { it.description }
-                .toMutableList()
+        val shoppingItems = database.shoppingDao().getAllItems()
+        shoppingListEntities.value = shoppingItems
+        shoppingListItems.value = shoppingItems.map { it.description }.toMutableList()
     }
 
     private fun readPdfText(uri: Uri): String {

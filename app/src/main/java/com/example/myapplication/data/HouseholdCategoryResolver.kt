@@ -113,6 +113,36 @@ object HouseholdCategoryResolver {
             ) ->
                 HouseholdCategory.HOUSEHOLD
 
+            // Australian supermarket non-food descriptors (before food heuristics).
+            containsAny(
+                "sunscreen", "sunblock", "moisturiser", "moisturizer", "lip balm",
+                "cotton buds", "cotton balls", "dental floss", "face wash",
+                "hand wash", "hand sanitiser", "body lotion", "nail polish",
+                "makeup remover", "facial cleanser"
+            ) -> HouseholdCategory.BATHROOM
+
+            containsAny(
+                "washing capsules", "laundry pods", "washing powder",
+                "clothes detergent", "dryer sheets"
+            ) -> HouseholdCategory.LAUNDRY
+
+            containsAny(
+                "multi purpose cleaner", "multipurpose cleaner", "mould remover",
+                "oven cleaner", "toilet cleaner", "drain cleaner",
+                "dishwashing tablets", "dishwashing pods", "scourer", "sponges"
+            ) -> HouseholdCategory.CLEANING
+
+            containsAny(
+                "puppy food", "kitten food", "dog biscuits", "cat biscuits",
+                "dog kibble", "cat kibble", "pet litter"
+            ) -> HouseholdCategory.PET
+
+            containsAny(
+                "cling wrap", "cling film", "freezer bags", "zip lock bags",
+                "sandwich bags", "foil trays", "food storage bags",
+                "light bulb", "lightbulb", "bin bags", "paper napkins"
+            ) -> HouseholdCategory.HOUSEHOLD
+
             // Common food terms found in abbreviated receipt descriptions
             containsAny(
                 "grn goddess",

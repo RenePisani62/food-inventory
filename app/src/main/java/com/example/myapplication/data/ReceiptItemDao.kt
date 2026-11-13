@@ -11,8 +11,10 @@ interface ReceiptItemDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(item: ReceiptItemEntity): Long
 
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertAll(items: List<ReceiptItemEntity>)
+    suspend fun insertAll(items: List<ReceiptItemEntity>): List<Long>
+
 
     @Query("""
         SELECT *

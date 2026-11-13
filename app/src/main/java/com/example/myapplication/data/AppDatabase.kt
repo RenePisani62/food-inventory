@@ -7,6 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
+
 @Database(
     entities = [
         ProductEntity::class,
@@ -15,11 +16,13 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProductKnowledgeOverrideEntity::class,
         ReceiptEntity::class,
         ReceiptItemEntity::class,
+        ReceiptInventoryContributionEntity::class,
         ProductLocationPreferenceEntity::class,
         ProductCategoryPreferenceEntity::class
     ],
-    version = 16
+    version = 17
 )
+
 
 abstract class AppDatabase : RoomDatabase() {
 
@@ -38,6 +41,11 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun receiptDao(): ReceiptDao
 
     abstract fun receiptItemDao(): ReceiptItemDao
+
+
+    abstract fun receiptInventoryContributionDao():
+            ReceiptInventoryContributionDao
+
 
     companion object {
 
