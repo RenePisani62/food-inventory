@@ -74,6 +74,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import android.util.Log
 import com.example.myapplication.data.ShoppingItemEntity
 import com.example.myapplication.data.RetailerProductResolver
+import com.example.myapplication.data.PantryPalPhotoCatalogue
 import com.example.myapplication.data.RetailerAliasStore
 import com.example.myapplication.data.ProductKnowledgeResolver
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -117,6 +118,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.nativeCanvas
 import com.example.myapplication.data.MonthlySpend
+import com.example.myapplication.data.ColesRichOrderParser
 
 
 
@@ -513,6 +515,33 @@ class MainActivity : ComponentActivity() {
                 processReceiptOcr(uri)
             }
         }
+    // PP-158A: read-only rich order preview. Intentionally does not write inventory.
+    private val richOrderPreview = mutableStateOf<String?>(null)
+    private val richOrderLauncher =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri != null) lifecycleScope.launch {
+                try {
+                    val result = withContext(Dispatchers.IO) {
+                        contentResolver.openInputStream(uri)?.use { input ->
+                            com.example.myapplication.data.ColesRichOrderParser.parse(input)
+                        } ?: error("Unable to open selected file")
+                    }
+                    richOrderPreview.value = buildString {
+                        append("${result.items.size} products found\n")
+                        append("Line total: $" + String.format(Locale.US, "%.2f", result.lineTotal) + "\n\n")
+                        result.items.forEach { item ->
+                            append(item.name + "  × " + item.quantity + " " + item.unit)
+                            append("  $" + String.format(Locale.US, "%.2f", item.lineTotal) + "\n")
+                        }
+                        append("\nPREVIEW ONLY — nothing has been added to inventory.")
+                    }
+                } catch (e: Exception) {
+                    Log.e("PantryPalRichOrder", "Rich order preview failed", e)
+                    Toast.makeText(this@MainActivity, "Cannot read Coles order: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
     private val importReceiptLauncher =
         registerForActivityResult(
             ActivityResultContracts.GetContent()
@@ -4446,7 +4475,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            if (showReceiptImportOptions) {
+            richOrderPreview.value?.let { preview ->
+            AlertDialog(
+                onDismissRequest = { richOrderPreview.value = null },
+                title = { Text("Coles order preview (PP-158A)") },
+                text = { androidx.compose.foundation.layout.Column(modifier = Modifier.verticalScroll(rememberScrollState())) { Text(preview) } },
+                confirmButton = { TextButton(onClick = { richOrderPreview.value = null }) { Text("Close") } }
+            )
+        }
+
+        if (showReceiptImportOptions) {
 
                 AlertDialog(
                     onDismissRequest = {
@@ -4493,6 +4531,29 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 Text("🖼  Import Receipt Image")
                             }
+
+
+                            // PP-158B: isolated, read-only browser feasibility test.
+                            Button(
+                                onClick = {
+                                    showReceiptImportOptions = false
+                                    startActivity(Intent(this@MainActivity, ColesCaptureFeasibilityActivity::class.java))
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("🛒 Open Coles Order (Test)")
+                            }
+
+                            Button(
+                                onClick = {
+                                    showReceiptImportOptions = false
+                                    richOrderLauncher.launch("*/*")
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("🛒 Coles Rich Order Preview")
+                            }
+
 
                             Button(
                                 onClick = {
@@ -5495,8 +5556,17 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun InventoryThumbnail(product: ProductEntity) {
-        val bitmap by produceState<Bitmap?>(initialValue = null, key1 = product.barcode) {
-            value = loadProductThumbnail(product.barcode)
+        // PP-157 pilot: verified local catalogue images take priority over remote lookup.
+        // Name matching is deliberately strict; unrelated variants keep their existing image.
+        val bitmap by produceState<Bitmap?>(initialValue = null, key1 = product.itemName, key2 = product.barcode) {
+            value = withContext(Dispatchers.IO) {
+                PantryPalPhotoCatalogue.imageFor(applicationContext, product.itemName)
+            } ?: if (PantryPalPhotoCatalogue.isAmbiguousTimTam(product.itemName)) {
+                // Avoid an unrelated barcode image for an unverified Tim Tam variety.
+                null
+            } else {
+                loadProductThumbnail(product.barcode)
+            }
         }
         Surface(
             modifier = Modifier.size(86.dp),
@@ -5513,8 +5583,11 @@ class MainActivity : ComponentActivity() {
                 )
             } else {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    Text(productCategorySymbol(product.itemName),
-                        style = MaterialTheme.typography.headlineLarge)
+                    Text(
+                        if (PantryPalPhotoCatalogue.isAmbiguousTimTam(product.itemName)) "🍪"
+                        else productCategorySymbol(product.itemName),
+                        style = MaterialTheme.typography.headlineLarge
+                    )
                 }
             }
         }

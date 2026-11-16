@@ -58,6 +58,11 @@
 
         </activity>
 
+        <!-- PP-158B: explicit in-app Coles order accessibility test; no import -->
+        <activity
+            android:name="com.example.myapplication.ColesCaptureFeasibilityActivity"
+            android:exported="false" />
+
         <activity
             android:name="com.example.myapplication.PortraitCaptureActivity"
             android:screenOrientation="portrait"
