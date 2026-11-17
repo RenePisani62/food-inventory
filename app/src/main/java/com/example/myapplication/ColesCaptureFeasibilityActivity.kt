@@ -16,10 +16,12 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.ScrollView
+import android.app.AlertDialog
 import org.json.JSONObject
 import org.json.JSONTokener
 
-/** PP-158B.2: read-only displayed-order extraction feasibility test. */
+/** PP-158B.4: quantity-anchored read-only extraction diagnostic. */
 class ColesCaptureFeasibilityActivity : Activity() {
     private lateinit var browser: WebView
     private lateinit var status: TextView
@@ -31,12 +33,12 @@ class ColesCaptureFeasibilityActivity : Activity() {
         super.onCreate(savedInstanceState)
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         status = TextView(this).apply {
-            text = "Open a completed order, then tap Check. Candidate labels are approximate; no order data is saved."
+            text = "Open a completed order, then tap Check. Quantity-anchored diagnostic; no order data is saved."
             setTextColor(Color.BLACK)
             textSize = 13f
             setPadding(16, 12, 16, 12)
         }
-        val check = Button(this).apply { text = "Check product labels (read only)" }
+        val check = Button(this).apply { text = "Validate Coles order (read only)" }
         val reset = Button(this).apply { text = "Reset login (only if needed)" }
         val orders = Button(this).apply { text = "Go to Coles Orders" }
         browser = WebView(this).apply {
@@ -95,30 +97,59 @@ class ColesCaptureFeasibilityActivity : Activity() {
             // credentials, HTML or product data are stored or sent anywhere.
             // Coles may virtualise product rows, so this is NOT a complete-order count.
             val js = """(function(){
-              var body=document.body;
-              if(!body) return JSON.stringify({error:'Page body unavailable'});
-              var all=body.innerText||'';
-              var lines=all.split(/\n/).map(function(s){return s.trim()}).filter(Boolean);
-              var results=[];
-              var seen={};
-              for(var i=0;i<lines.length;i++){
-                var label=lines[i];
-                if(label.length<7 || label.length>150)continue;
-                if(/^(quantity|weight|special|orders|search|account|add to|view|total|price|subtotal|delivery|checkout|shop|col es)/i.test(label))continue;
-                var tail=lines.slice(i+1,i+5).join(' ');
-                var match=tail.match(/(?:Quantity\s*:\s*([\d.]+)|Weight\s*:\s*([\d.]+))/i);
-                if(!match)continue;
-                // The nearest preceding label is a candidate, not a verified product.
-                // Keep price unknown unless confidently tied to the row.
-                var key=label.toLowerCase();
-                if(seen[key])continue;
-                seen[key]=true;
-                results.push({name:label,quantity:match[1]||null,weight:match[2]||null});
-                if(results.length>=60)break;
-              }
-              return JSON.stringify({characters:all.length,images:document.images.length,
-                candidates:results,visibleTextLines:lines.length});
-            })()"""
+  var root=document.body;
+  if(!root)return JSON.stringify({error:'Page body unavailable'});
+  var text=root.innerText||'';
+  var lines=text.split(/\n/).map(function(s){return s.replace(/\s+/g,' ').trim()}).filter(Boolean);
+  var qtyRe=/^(?:Quantity|Qty)\s*:\s*(\d+(?:\.\d+)?)$/i;
+  var weightRe=/^Weight\s*:\s*(\d+(?:\.\d+)?)\s*(kg|g)?$/i;
+  var moneyRe=/^\$\s*(\d{1,4}(?:,\d{3})*\.\d{2})$/;
+  var reject=/^(items in your order|taxable item|non.taxable item|quantity|weight|special|orders|search|account|subtotal|total|delivery|checkout|shop|view order|add to cart|save|price|price per kg|unit price|each|in.store|order details|discount|savings|continue shopping|back to orders|previous orders|help|contact us|refund|payment|paid|receipt|order summary)$/i;
+  function isName(s){
+    return s.length>=5 && s.length<=170 && /[a-z]{2}/i.test(s) && !reject.test(s) &&
+      !/^(?:Quantity|Qty|Weight)\s*:/i.test(s) && !/^\$/.test(s) &&
+      !/^(?:special|was|now|save|total|subtotal|taxable|order|items in)/i.test(s) &&
+      !/^(?:\d+(?:\.\d+)?|\d+\s*(?:kg|g|ml|l))$/i.test(s);
+  }
+  // Each complete Quantity/Weight line anchors one product. Never scan ahead
+  // to borrow a quantity from the next product, as the previous test did.
+  var items=[],rejected=0,unpriced=0;
+  for(var i=0;i<lines.length;i++){
+    var q=lines[i].match(qtyRe), w=lines[i].match(weightRe);
+    if(!q&&!w)continue;
+    // Find the nearest preceding product description, optionally spanning two
+    // consecutive name lines. Stop at another quantity, price or section label.
+    var j=i-1;
+    while(j>=0 && /^(?:Special|On special|Was|Now|Save)$/i.test(lines[j]))j--;
+    if(j<0 || !isName(lines[j])){rejected++;continue;}
+    var name=lines[j];
+    if(j>0 && isName(lines[j-1]) && !qtyRe.test(lines[j-1]) && !weightRe.test(lines[j-1]) &&
+       !moneyRe.test(lines[j-1]) && lines[j-1].length<95 &&
+       !/^(?:items in|taxable|your order|order details)/i.test(lines[j-1])){
+       // Only join if the previous line is plausibly a wrapped description;
+       // otherwise preserve the nearer line and flag for review.
+       if(name.length<35 && !/\b(?:g|kg|ml|l|pack|each|per kg)\b/i.test(lines[j-1]))
+          name=lines[j-1]+' '+name;
+    }
+    // Inspect only the section between this quantity and the next quantity,
+    // bounded to a short span. Price matching remains provisional until DOM
+    // row structure is independently confirmed.
+    var next=i+1;
+    while(next<lines.length && next<i+9 && !qtyRe.test(lines[next]) && !weightRe.test(lines[next]))next++;
+    var prices=[];
+    for(var k=i+1;k<next;k++){
+      var m=lines[k].match(moneyRe);
+      if(m)prices.push(Number(m[1].replace(/,/g,'')));
+    }
+    var price=prices.length===1?prices[0]:null;
+    if(price===null)unpriced++;
+    items.push({name:name,quantity:q?Number(q[1]):null,weightKg:w?Number(w[1])*(w[2]&&w[2].toLowerCase()==='g'?0.001:1):null,
+      tentativeLinePrice:price,priceCandidates:prices.length});
+  }
+  var sum=items.reduce(function(s,x){return s+(x.tentativeLinePrice||0)},0);
+  return JSON.stringify({characters:text.length,images:document.images.length,
+    items:items,rejectedLabels:rejected,unpriced:unpriced,pricedTotal:Math.round(sum*100)/100});
+})()"""
             browser.evaluateJavascript(js) { encoded ->
                 try {
                     val decoded = JSONTokener(encoded).nextValue() as String
@@ -126,22 +157,37 @@ class ColesCaptureFeasibilityActivity : Activity() {
                     if (data.has("error")) {
                         status.text = data.optString("error")
                     } else {
-                        val candidates = data.getJSONArray("candidates")
+                        val candidates = data.getJSONArray("items")
                         val summary = StringBuilder().apply {
-                            append("Read-only DOM test: ${data.optInt("characters")} characters, ")
-                            append("${data.optInt("images")} images; ")
-                            append("${candidates.length()} candidate product labels. ")
-                            append("May be incomplete or include false matches.\n")
-                            for (i in 0 until minOf(candidates.length(), 8)) {
+                            append("${candidates.length()} anchored product entries | ${data.optInt("characters")} characters | ${data.optInt("images")} images\n")
+                            append("Rejected quantity/weight labels: ${data.optInt("rejectedLabels")} | Prices needing review: ${data.optInt("unpriced")}\n")
+                            append("Sum of tentative line prices: $" + String.format(java.util.Locale.US, "%.2f", data.optDouble("pricedTotal")) + "\n")
+                            append("IMPORTANT: This is NOT an invoice reconciliation. Check every row and compare with the Coles invoice total.\n")
+                            append("PREVIEW ONLY — nothing is saved or imported.\n")
+                            for (i in 0 until candidates.length()) {
                                 val item = candidates.getJSONObject(i)
                                 append("\n${i + 1}. ${item.optString("name")}")
                                 if (!item.isNull("quantity")) append(" | Qty ${item.optString("quantity")}")
-                                if (!item.isNull("weight")) append(" | Weight ${item.optString("weight")}")
+                                if (!item.isNull("weightKg")) append(" | Weight ${item.optString("weightKg")} kg")
+                                if (!item.isNull("tentativeLinePrice")) append(" | Tentative $${String.format(java.util.Locale.US, "%.2f", item.optDouble("tentativeLinePrice"))}")
+                                else append(" | Price unverified")
+                                append("\n")
                             }
-                            if (candidates.length() > 8) append("\n…more candidates not shown")
-                            append("\n\nPREVIEW ONLY. No data saved or imported.")
                         }
-                        status.text = summary.toString()
+                        status.text = "Found ${candidates.length()} quantity-anchored entries. Review all rows and totals."
+                        val output = TextView(this@ColesCaptureFeasibilityActivity).apply {
+                            text = summary.toString()
+                            textSize = 14f
+                            setPadding(24, 16, 24, 16)
+                        }
+                        val scroller = ScrollView(this@ColesCaptureFeasibilityActivity).apply {
+                            addView(output)
+                        }
+                        AlertDialog.Builder(this@ColesCaptureFeasibilityActivity)
+                            .setTitle("Coles order preview — read only")
+                            .setView(scroller)
+                            .setPositiveButton("Close", null)
+                            .show()
                     }
                 } catch (e: Exception) {
                     Log.w(logTag, "Page metadata inspection failed", e)
