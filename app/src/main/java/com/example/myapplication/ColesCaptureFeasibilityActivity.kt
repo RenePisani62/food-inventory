@@ -17,7 +17,10 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.ScrollView
-import android.app.AlertDialog
+import android.app.Dialog
+import android.view.Gravity
+import android.view.View
+import android.widget.FrameLayout
 import org.json.JSONObject
 import org.json.JSONTokener
 
@@ -27,6 +30,8 @@ class ColesCaptureFeasibilityActivity : Activity() {
     private lateinit var status: TextView
     private val startUrl = "https://www.coles.com.au/account/orders"
     private val logTag = "PPColesAuth"
+    private var latestValidatedItems: String? = null
+    private var latestOrderMetadata: String? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -147,10 +152,105 @@ class ColesCaptureFeasibilityActivity : Activity() {
       tentativeLinePrice:price,priceCandidates:prices.length});
   }
   var sum=items.reduce(function(s,x){return s+(x.tentativeLinePrice||0)},0);
-  return JSON.stringify({characters:text.length,images:document.images.length,
+  // PP-158B.8b: use bounded searches around Coles' visible summary labels.
+  // Labels and values may occupy different DOM text nodes or multiple lines.
+  function findLabel(label){
+    return lines.findIndex(function(x){return x.toLowerCase()===label.toLowerCase();});
+  }
+  function nearLabel(label, test, maxAhead){
+    var i=findLabel(label);
+    if(i<0)return null;
+    for(var j=i+1;j<Math.min(lines.length,i+1+maxAhead);j++){
+      if(test.test(lines[j]))return lines[j];
+    }
+    return null;
+  }
+  var receiptId=nearLabel('Receipt ID',/^[A-Z0-9-]{1,40}$/i,4);
+  var datePattern=/^(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+)?\d{1,2}\s+[A-Za-z]+(?:\s+\d{4})?,?\s+\d{1,2}:\d{2}\s*(?:AM|PM)$/i;
+  // Prefer the first date-like value following When, regardless of whether
+  // Coles splits weekday, day, month and time across text nodes.
+  var when=nearLabel('When',datePattern,6);
+  var whenDiagnostic=null;
+  var whenIx=findLabel('When');
+  if(whenIx<0)whenDiagnostic='When label not found';
+  if(whenIx>=0){
+    var nearby=lines.slice(whenIx+1,Math.min(lines.length,whenIx+8));
+    // Bounded, date-only diagnostic; never include arbitrary account data.
+    whenDiagnostic=nearby.map(function(v){
+      var found=v.match(/(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}:\d{2}\s*(?:AM|PM)?|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b|\b\d{1,2}\b)/gi);
+      return found?found.join(' '):'';
+    }).filter(Boolean).slice(0,4).join(' | ')||'No date-like text nearby';
+    if(!when){
+      var joined=nearby.slice(0,4).join(' ');
+      var flexible=joined.match(/(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+)?\d{1,2}\s+[A-Za-z]{3,9}(?:\s+\d{4})?\s*,?\s*\d{1,2}:\d{2}\s*(?:AM|PM)/i);
+      if(flexible)when=flexible[0];
+    }
+  }
+  // PP-158B.8e: inspect DOM adjacent to the visible "When" label.
+  // Report only date-shaped matches and structural information, not arbitrary
+  // nearby text (which could contain private account information).
+  var whenDomDiagnostic='When element not found';
+  var candidates=Array.from(document.querySelectorAll('span,div,p,dt,dd,strong,b,label,h2,h3,h4'))
+    .filter(function(el){
+      return el.children.length===0 && (el.textContent||'').trim().toLowerCase()==='when';
+    }).slice(0,5);
+  if(candidates.length){
+    var probes=[];
+    candidates.forEach(function(el){
+      var nodes=[el.nextElementSibling,el.parentElement&&el.parentElement.nextElementSibling,
+        el.parentElement&&el.parentElement.parentElement,
+        el.parentElement&&el.parentElement.parentElement&&el.parentElement.parentElement.nextElementSibling];
+      nodes.forEach(function(node){
+        if(!node)return;
+        var value=(node.innerText||node.textContent||'').trim().slice(0,500);
+        var dateMatch=value.match(/(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)?\s*\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*(?:\s+\d{4})?\s*,?\s*\d{1,2}:\d{2}\s*(?:AM|PM)/i);
+        if(dateMatch && !when)when=dateMatch[0].trim();
+        probes.push(node.tagName.toLowerCase()+':'+value.length+'chars'+(dateMatch?':date found':':no date'));
+      });
+    });
+    whenDomDiagnostic='When nodes '+candidates.length+'; '+probes.slice(0,8).join(' | ');
+  }
+  // Store must be in the Order summary area, not an arbitrary Coles product.
+  var store=null, summaryIx=findLabel('Order summary');
+  if(summaryIx>=0){
+    var endSummary=Math.min(lines.length,summaryIx+28);
+    for(var si=summaryIx+1;si<endSummary;si++){
+      if(/^Coles\s+[A-Za-z][A-Za-z -]{1,70}$/i.test(lines[si])){
+        store=lines[si];break;
+      }
+      if(/^Items in your order/i.test(lines[si]))break;
+    }
+  }
+  // Count can be split into adjacent DOM text nodes or separate lines.
+  var expectedCount=null;
+  var countText=text.match(/Items\s+in\s+your\s+order\s*\(\s*(\d{1,3})\s*\)/i);
+  if(countText)expectedCount=Number(countText[1]);
+  if(expectedCount===null){
+    var headingIx=lines.findIndex(function(x){return /^Items in your order/i.test(x);});
+    if(headingIx>=0){
+      var heading=lines.slice(headingIx,headingIx+3).join(' ');
+      var count=heading.match(/\(\s*(\d{1,3})\s*\)/);
+      if(count)expectedCount=Number(count[1]);
+    }
+  }
+  return JSON.stringify({receiptId:receiptId,orderDate:when,whenDiagnostic:whenDiagnostic,whenDomDiagnostic:whenDomDiagnostic,storeName:store,expectedCount:expectedCount,characters:text.length,images:document.images.length,
     items:items,rejectedLabels:rejected,unpriced:unpriced,pricedTotal:Math.round(sum*100)/100});
 })()"""
-            browser.evaluateJavascript(js) { encoded ->
+            // Expand the order's collapsed item section before inspecting the DOM.
+            // This interacts only with the currently displayed Coles page.
+            val expandJs = """(function(){
+              var nodes=Array.from(document.querySelectorAll('button,a,[role="button"]'));
+              var match=nodes.find(function(n){return /^(view all items|show all items)$/i.test((n.innerText||n.textContent||'').trim());});
+              if(match){match.click();return 'expanded';}
+              return 'not-found';
+            })()"""
+            browser.evaluateJavascript(expandJs) { expansion ->
+                status.text = if (expansion.contains("expanded"))
+                    "Expanding all items; checking order…" else
+                    "Checking visible order items (no expansion link detected)…"
+                browser.postDelayed({
+                    if (isFinishing || isDestroyed) return@postDelayed
+                    browser.evaluateJavascript(js) { encoded ->
                 try {
                     val decoded = JSONTokener(encoded).nextValue() as String
                     val data = JSONObject(decoded)
@@ -158,41 +258,98 @@ class ColesCaptureFeasibilityActivity : Activity() {
                         status.text = data.optString("error")
                     } else {
                         val candidates = data.getJSONArray("items")
+                        latestValidatedItems = candidates.toString()
+                        latestOrderMetadata = JSONObject().apply {
+                            put("receiptId", data.optString("receiptId", ""))
+                            put("storeName", data.optString("storeName", ""))
+                            put("expectedCount", data.optInt("expectedCount", -1))
+                            put("orderDate", data.optString("orderDate", ""))
+                            put("pageUrl", browser.url.orEmpty().take(500))
+                        }.toString()
                         val summary = StringBuilder().apply {
-                            append("${candidates.length()} anchored product entries | ${data.optInt("characters")} characters | ${data.optInt("images")} images\n")
+                            append("${candidates.length()} product entries | ${data.optInt("characters")} characters | ${data.optInt("images")} images\n")
                             append("Rejected quantity/weight labels: ${data.optInt("rejectedLabels")} | Prices needing review: ${data.optInt("unpriced")}\n")
-                            append("Sum of tentative line prices: $" + String.format(java.util.Locale.US, "%.2f", data.optDouble("pricedTotal")) + "\n")
-                            append("IMPORTANT: This is NOT an invoice reconciliation. Check every row and compare with the Coles invoice total.\n")
-                            append("PREVIEW ONLY — nothing is saved or imported.\n")
+                            append("Receipt ID: " + data.optString("receiptId").ifBlank { "Not identified" } + " | When: " + (data.optString("orderDate").takeUnless { it.isBlank() || it == "null" } ?: "Not identified") + "\n")
+                            append("Store: " + data.optString("storeName").ifBlank { "Not identified" } + " | Expected items: " + data.optInt("expectedCount", -1).let { if (it < 0) "Unknown" else it.toString() } + "\n")
+                            append("Tentative sum: $" + String.format(java.util.Locale.US, "%.2f", data.optDouble("pricedTotal")) + "\n")
+                            append("NOT an invoice reconciliation. Compare each row and the invoice total.\n")
                             for (i in 0 until candidates.length()) {
                                 val item = candidates.getJSONObject(i)
                                 append("\n${i + 1}. ${item.optString("name")}")
                                 if (!item.isNull("quantity")) append(" | Qty ${item.optString("quantity")}")
                                 if (!item.isNull("weightKg")) append(" | Weight ${item.optString("weightKg")} kg")
-                                if (!item.isNull("tentativeLinePrice")) append(" | Tentative $${String.format(java.util.Locale.US, "%.2f", item.optDouble("tentativeLinePrice"))}")
+                                if (!item.isNull("tentativeLinePrice")) append(" | $${String.format(java.util.Locale.US, "%.2f", item.optDouble("tentativeLinePrice"))}")
                                 else append(" | Price unverified")
                                 append("\n")
                             }
                         }
                         status.text = "Found ${candidates.length()} quantity-anchored entries. Review all rows and totals."
+                        // Custom dialog: only the item list scrolls; actions stay visible.
+                        val dialog = Dialog(this@ColesCaptureFeasibilityActivity)
+                        val density = resources.displayMetrics.density
+                        fun dp(n: Int) = (n * density).toInt()
+                        val root = LinearLayout(this@ColesCaptureFeasibilityActivity).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setBackgroundColor(Color.WHITE)
+                            setPadding(dp(16), dp(14), dp(16), dp(12))
+                        }
+                        val title = TextView(this@ColesCaptureFeasibilityActivity).apply {
+                            text = "Coles order preview — read only"
+                            textSize = 19f
+                            setTextColor(Color.BLACK)
+                        }
+                        root.addView(title)
+                        root.addView(TextView(this@ColesCaptureFeasibilityActivity).apply {
+                            text = "${candidates.length()} products · $" + String.format(java.util.Locale.US, "%.2f", data.optDouble("pricedTotal")) + " provisional\nNo receipt or inventory changes."
+                            textSize = 14f
+                            setTextColor(Color.DKGRAY)
+                            setPadding(0, dp(8), 0, dp(8))
+                        })
                         val output = TextView(this@ColesCaptureFeasibilityActivity).apply {
                             text = summary.toString()
-                            textSize = 14f
-                            setPadding(24, 16, 24, 16)
+                            textSize = 13f
+                            setTextColor(Color.DKGRAY)
+                            setPadding(0, dp(6), 0, dp(6))
                         }
                         val scroller = ScrollView(this@ColesCaptureFeasibilityActivity).apply {
                             addView(output)
+                            isFillViewport = false
                         }
-                        AlertDialog.Builder(this@ColesCaptureFeasibilityActivity)
-                            .setTitle("Coles order preview — read only")
-                            .setView(scroller)
-                            .setPositiveButton("Close", null)
-                            .show()
+                        root.addView(scroller, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+                        val actions = LinearLayout(this@ColesCaptureFeasibilityActivity).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                        }
+                        val close = Button(this@ColesCaptureFeasibilityActivity).apply {
+                            text = "Close"
+                            setOnClickListener { dialog.dismiss() }
+                        }
+                        val stage = Button(this@ColesCaptureFeasibilityActivity).apply {
+                            text = "Stage in PantryPal"
+                            isAllCaps = false
+                            setOnClickListener {
+                                val payload = latestValidatedItems ?: return@setOnClickListener
+                                setResult(RESULT_OK, android.content.Intent()
+                                    .putExtra("pp_coles_staging_items", payload)
+                                    .putExtra("pp_coles_order_metadata", latestOrderMetadata))
+                                dialog.dismiss()
+                                finish()
+                            }
+                        }
+                        actions.addView(close, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                        actions.addView(stage, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 2f))
+                        root.addView(actions)
+                        dialog.setContentView(root)
+                        dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.94).toInt(), (resources.displayMetrics.heightPixels * 0.76).toInt())
+                        dialog.show()
+                        dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.94).toInt(), (resources.displayMetrics.heightPixels * 0.76).toInt())
                     }
                 } catch (e: Exception) {
                     Log.w(logTag, "Page metadata inspection failed", e)
                     status.text = "Page inspection unavailable. No import performed."
                 }
+                    }
+                }, 1100L)
             }
         }
         reset.setOnClickListener {

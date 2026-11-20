@@ -517,6 +517,187 @@ class MainActivity : ComponentActivity() {
         }
     // PP-158A: read-only rich order preview. Intentionally does not write inventory.
     private val richOrderPreview = mutableStateOf<String?>(null)
+    // PP-158B.6: transient, editable staging. No receipt/inventory writes.
+    private val colesStagingItems = mutableStateOf<List<ColesStagedItem>>(emptyList())
+    private val colesPossibleDuplicates = mutableStateOf<List<String>>(emptyList())
+    private val colesOrderId = mutableStateOf<String?>(null)
+    private val colesOrderDate = mutableStateOf<String?>(null)
+    private val colesStoreName = mutableStateOf<String?>(null)
+    private val colesExpectedCount = mutableStateOf<Int?>(null)
+    private val colesDuplicateStatus = mutableStateOf("Not checked")
+    private data class ColesStagedItem(val name: String, val quantity: Double?, val unit: String, val price: Double?)
+    private val colesStagingLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK) {
+                val raw = result.data?.getStringExtra("pp_coles_staging_items") ?: return@registerForActivityResult
+                try {
+                    require(raw.length <= 100_000) { "Order preview is too large" }
+                    val arr = org.json.JSONArray(raw)
+                    require(arr.length() in 1..200) { "Unexpected product count" }
+                    val staged = (0 until arr.length()).map { index ->
+                        val obj = arr.getJSONObject(index)
+                        val name = obj.getString("name").trim()
+                        require(name.isNotBlank() && name.length <= 200) { "Invalid product name" }
+                        val weight = if (!obj.isNull("weightKg")) obj.getDouble("weightKg") else null
+                        val qty = if (weight != null) weight else if (!obj.isNull("quantity")) obj.getDouble("quantity") else null
+                        val price = if (!obj.isNull("tentativeLinePrice")) obj.getDouble("tentativeLinePrice") else null
+                        require(qty == null || (qty.isFinite() && qty > 0)) { "Invalid quantity" }
+                        require(price == null || (price.isFinite() && price >= 0)) { "Invalid price" }
+                        ColesStagedItem(name, qty, if (weight != null) "kg" else "each", price)
+                    }
+                    val meta = result.data?.getStringExtra("pp_coles_order_metadata")?.let { JSONObject(it) }
+                    val extractedId = meta?.optString("receiptId")?.trim()?.takeIf { it.isNotBlank() && it != "null" }
+                    val extractedDate = meta?.optString("orderDate")?.trim()?.takeIf { it.isNotBlank() && it != "null" }
+                    colesOrderId.value = extractedId
+                    colesOrderDate.value = extractedDate
+                    colesStoreName.value = meta?.optString("storeName")?.trim()?.takeIf { it.isNotBlank() && it != "null" }
+                    colesExpectedCount.value = meta?.optInt("expectedCount", -1)?.takeIf { it >= 0 }
+                    colesDuplicateStatus.value = "Checking existing receipts…"
+                    colesStagingItems.value = staged
+                    colesPossibleDuplicates.value = emptyList()
+                    currentScreen.value = "COLES_STAGING"
+                    // Read-only heuristic. Equal totals/counts do NOT establish receipt identity.
+                    lifecycleScope.launch {
+                        try {
+                            val total = staged.sumOf { it.price ?: 0.0 }
+                            val existing = withContext(Dispatchers.IO) { database.receiptDao().getAllReceipts() }
+                            // Receipt numbers may differ between an online order and an eReceipt.
+                            // A short Coles in-store Receipt ID is NOT globally unique.
+                            // Number-only matches are candidates, never confirmed duplicates.
+                            val numberMatches = extractedId?.let { id ->
+                                existing.filter { receipt ->
+                                    receipt.storeName?.contains("coles", ignoreCase = true) == true &&
+                                    receipt.receiptNumber?.trim()?.equals(id, ignoreCase = true) == true
+                                }
+                            }.orEmpty()
+                            val possible = existing.filter { receipt ->
+                                receipt.storeName?.contains("coles", ignoreCase = true) == true &&
+                                receipt.totalAmount != null &&
+                                kotlin.math.abs(receipt.totalAmount - total) < 0.005 &&
+                                (receipt.itemCount == null || receipt.itemCount == staged.size) &&
+                                numberMatches.none { it.id == receipt.id }
+                            }
+                            colesDuplicateStatus.value = when {
+                                numberMatches.isNotEmpty() -> "POSSIBLE: matching short receipt ID (verify store, date and total)"
+                                possible.isNotEmpty() -> "POSSIBLE: matching Coles total and compatible count"
+                                else -> "No candidate in existing Coles receipts — duplicate status unverified"
+                            }
+                            colesPossibleDuplicates.value = (numberMatches.map { receipt ->
+                                "Matching receipt ID (not conclusive): receipt #${receipt.id}" +
+                                    (receipt.receiptDate?.let { " ($it)" } ?: "")
+                            } + possible.take(5).map { receipt ->
+                                "Possible match: receipt #${receipt.id}" +
+                                    (receipt.receiptDate?.let { " ($it)" } ?: "")
+                            }).take(8)
+                        } catch (e: Exception) {
+                            Log.w("PPColesStaging", "Read-only receipt comparison unavailable", e)
+                            colesPossibleDuplicates.value = listOf("Existing receipts could not be checked")
+                            colesDuplicateStatus.value = "CHECK UNAVAILABLE"
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("PPColesStaging", "Invalid staged order", e)
+                    Toast.makeText(this, "Unable to stage Coles order", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
+    @Composable
+    private fun ColesStagingScreen() {
+        val staged = colesStagingItems.value
+        val sum = staged.sumOf { it.price ?: 0.0 }
+        val missingPrices = staged.count { it.price == null }
+        Column(
+            modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            Text("Coles order — staging review", style = MaterialTheme.typography.titleSmall)
+            Text("${staged.size} lines · provisional $" + String.format(Locale.US, "%.2f", sum),
+                style = MaterialTheme.typography.bodyMedium)
+            Text("Edit rows below. No receipt or inventory changes.", style = MaterialTheme.typography.bodySmall)
+            Text("Coles receipt ID: ${colesOrderId.value ?: "Not identified"}", style = MaterialTheme.typography.bodySmall)
+            Text("Store: ${colesStoreName.value ?: "Not identified"}", style = MaterialTheme.typography.bodySmall)
+            Text("Expected items: ${colesExpectedCount.value?.toString() ?: "Not identified"}" +
+                (colesExpectedCount.value?.let { if (it == staged.size) " — count matches" else " — COUNT MISMATCH, review required" } ?: ""),
+                style = MaterialTheme.typography.bodySmall)
+            Text("Order date: ${colesOrderDate.value ?: "Not identified"}", style = MaterialTheme.typography.bodySmall)
+            Text("Duplicate check: ${colesDuplicateStatus.value}", style = MaterialTheme.typography.bodySmall)
+            if (missingPrices > 0) {
+                Text("$missingPrices prices still need review", color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            val possible = colesPossibleDuplicates.value
+            if (possible.isNotEmpty()) {
+                Text("POSSIBLE DUPLICATE / CHECK REQUIRED", color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelMedium)
+                possible.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                Text("Total and item count alone cannot identify an order.", style = MaterialTheme.typography.bodySmall)
+            }
+            HorizontalDivider()
+            LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(vertical = 6.dp)) {
+                items(staged.size) { index ->
+                    val item = staged[index]
+                    // Remember text locally so partially typed numbers remain editable.
+                    var nameText by remember(index, item.name) { mutableStateOf(item.name) }
+                    var qtyText by remember(index) { mutableStateOf(item.quantity?.toString() ?: "") }
+                    var priceText by remember(index) { mutableStateOf(item.price?.let { String.format(Locale.US, "%.2f", it) } ?: "") }
+                    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+                        Text("Item ${index + 1} · ${item.unit}", style = MaterialTheme.typography.labelMedium)
+                        OutlinedTextField(
+                            value = nameText, onValueChange = { value ->
+                                nameText = value
+                                if (value.isNotBlank() && value.length <= 200)
+                                    colesStagingItems.value = colesStagingItems.value.toMutableList().also {
+                                        it[index] = it[index].copy(name = value.trim())
+                                    }
+                            }, label = { Text("Product") }, singleLine = false,
+                            modifier = Modifier.fillMaxWidth(), minLines = 1, maxLines = 2,
+                            textStyle = MaterialTheme.typography.bodyMedium
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = qtyText, onValueChange = { value ->
+                                    qtyText = value
+                                    val parsed = value.toDoubleOrNull()
+                                    colesStagingItems.value = colesStagingItems.value.toMutableList().also {
+                                        it[index] = it[index].copy(quantity = parsed?.takeIf { n -> n.isFinite() && n > 0 })
+                                    }
+                                }, label = { Text("Qty / weight") }, singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyMedium,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = priceText, onValueChange = { value ->
+                                    priceText = value
+                                    val parsed = value.toDoubleOrNull()
+                                    colesStagingItems.value = colesStagingItems.value.toMutableList().also {
+                                        it[index] = it[index].copy(price = parsed?.takeIf { n -> n.isFinite() && n >= 0 })
+                                    }
+                                }, label = { Text("Line total ($)") }, singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyMedium,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    HorizontalDivider()
+                }
+            }
+            Button(onClick = {
+                colesStagingItems.value = emptyList()
+                colesPossibleDuplicates.value = emptyList()
+                colesOrderId.value = null
+                colesOrderDate.value = null
+                colesStoreName.value = null
+                colesExpectedCount.value = null
+                colesDuplicateStatus.value = "Not checked"
+                currentScreen.value = "HOME"
+            }, modifier = Modifier.fillMaxWidth()) { Text("Close staging preview") }
+            Text("Import disabled — identity and duplicate checks pending.",
+                style = MaterialTheme.typography.labelSmall)
+        }
+    }
+
     private val richOrderLauncher =
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
             if (uri != null) lifecycleScope.launch {
@@ -2525,6 +2706,9 @@ class MainActivity : ComponentActivity() {
 
                             "IMPORT_REVIEW" ->
                                 ImportReviewScreen()
+
+                            "COLES_STAGING" ->
+                                ColesStagingScreen()
 
                             else ->
                                 HomeScreen()
@@ -4537,7 +4721,7 @@ class MainActivity : ComponentActivity() {
                             Button(
                                 onClick = {
                                     showReceiptImportOptions = false
-                                    startActivity(Intent(this@MainActivity, ColesCaptureFeasibilityActivity::class.java))
+                                    colesStagingLauncher.launch(Intent(this@MainActivity, ColesCaptureFeasibilityActivity::class.java))
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
