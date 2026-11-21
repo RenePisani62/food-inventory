@@ -520,11 +520,16 @@ class MainActivity : ComponentActivity() {
     // PP-158B.6: transient, editable staging. No receipt/inventory writes.
     private val colesStagingItems = mutableStateOf<List<ColesStagedItem>>(emptyList())
     private val colesPossibleDuplicates = mutableStateOf<List<String>>(emptyList())
+    private val colesMismatchDetails = mutableStateOf<List<String>>(emptyList())
     private val colesOrderId = mutableStateOf<String?>(null)
     private val colesOrderDate = mutableStateOf<String?>(null)
     private val colesStoreName = mutableStateOf<String?>(null)
     private val colesExpectedCount = mutableStateOf<Int?>(null)
     private val colesDuplicateStatus = mutableStateOf("Not checked")
+    private val colesDuplicateHigh = mutableStateOf(false)
+    private val colesDuplicatePossible = mutableStateOf(false)
+    private val colesDuplicateCheckReady = mutableStateOf(false)
+    private val colesReviewOrigin = mutableStateOf(false)
     private data class ColesStagedItem(val name: String, val quantity: Double?, val unit: String, val price: Double?)
     private val colesStagingLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -553,8 +558,12 @@ class MainActivity : ComponentActivity() {
                     colesStoreName.value = meta?.optString("storeName")?.trim()?.takeIf { it.isNotBlank() && it != "null" }
                     colesExpectedCount.value = meta?.optInt("expectedCount", -1)?.takeIf { it >= 0 }
                     colesDuplicateStatus.value = "Checking existing receipts…"
+                    colesDuplicateHigh.value = false
+                    colesDuplicatePossible.value = false
+                    colesDuplicateCheckReady.value = false
                     colesStagingItems.value = staged
                     colesPossibleDuplicates.value = emptyList()
+                    colesMismatchDetails.value = emptyList()
                     currentScreen.value = "COLES_STAGING"
                     // Read-only heuristic. Equal totals/counts do NOT establish receipt identity.
                     lifecycleScope.launch {
@@ -570,29 +579,127 @@ class MainActivity : ComponentActivity() {
                                     receipt.receiptNumber?.trim()?.equals(id, ignoreCase = true) == true
                                 }
                             }.orEmpty()
-                            val possible = existing.filter { receipt ->
+                            // PP-158B.9a: receipt.itemCount is purchased units (40),
+                            // whereas staged.size is distinct product lines (27).
+                            // Compare against stored receipt item rows instead.
+                            val totalMatches = existing.filter { receipt ->
                                 receipt.storeName?.contains("coles", ignoreCase = true) == true &&
                                 receipt.totalAmount != null &&
                                 kotlin.math.abs(receipt.totalAmount - total) < 0.005 &&
-                                (receipt.itemCount == null || receipt.itemCount == staged.size) &&
                                 numberMatches.none { it.id == receipt.id }
                             }
-                            colesDuplicateStatus.value = when {
-                                numberMatches.isNotEmpty() -> "POSSIBLE: matching short receipt ID (verify store, date and total)"
-                                possible.isNotEmpty() -> "POSSIBLE: matching Coles total and compatible count"
-                                else -> "No candidate in existing Coles receipts — duplicate status unverified"
+                            val possible = totalMatches.filter { receipt ->
+                                val lines = withContext(Dispatchers.IO) {
+                                    database.receiptItemDao().getItemsForReceipt(receipt.id.toLong())
+                                }
+                                lines.size == staged.size
                             }
-                            colesPossibleDuplicates.value = (numberMatches.map { receipt ->
-                                "Matching receipt ID (not conclusive): receipt #${receipt.id}" +
-                                    (receipt.receiptDate?.let { " ($it)" } ?: "")
-                            } + possible.take(5).map { receipt ->
-                                "Possible match: receipt #${receipt.id}" +
-                                    (receipt.receiptDate?.let { " ($it)" } ?: "")
-                            }).take(8)
+                                                         // PP-158B.10: compare actual line signatures, not just line count.
+                             // Product names differ between Coles rich orders and eReceipts;
+                             // matching quantity + line price is evidence, not proof of identity.
+                             val orderDayMonth = Regex("""(?i)\b(\d{1,2})\s+([A-Za-z]{3,9})\b""")
+                                 .find(extractedDate.orEmpty())?.let { match ->
+                                     val day = match.groupValues[1].toIntOrNull()
+                                     val month = runCatching {
+                                         java.time.Month.valueOf(
+                                             when (match.groupValues[2].take(3).lowercase(Locale.ENGLISH)) {
+                                                 "jan" -> "JANUARY"; "feb" -> "FEBRUARY"; "mar" -> "MARCH"
+                                                 "apr" -> "APRIL"; "may" -> "MAY"; "jun" -> "JUNE"
+                                                 "jul" -> "JULY"; "aug" -> "AUGUST"; "sep" -> "SEPTEMBER"
+                                                 "oct" -> "OCTOBER"; "nov" -> "NOVEMBER"; "dec" -> "DECEMBER"
+                                                 else -> "INVALID"
+                                             }
+                                         ).value
+                                     }.getOrNull()
+                                     if (day != null && month != null) day to month else null
+                                 }
+                             fun signature(qty: Double?, unit: String?, price: Double?): String? {
+                                 if (qty == null || !qty.isFinite() || qty <= 0.0 ||
+                                     price == null || !price.isFinite() || price < 0.0) return null
+                                 val q = kotlin.math.round(qty * 1000).toLong()
+                                 val cents = kotlin.math.round(price * 100).toLong()
+                                 return "${unit?.trim()?.lowercase(Locale.ENGLISH) ?: "each"}|$q|$cents"
+                             }
+                             val stagedSignatures = staged.map { signature(it.quantity, it.unit, it.price) }
+                             // PP-158B.12: conservative weighted evidence, not a probability.
+                             // Only compare Coles receipts with the same total, or a comparable ID.
+                             // A matching day/month is required for high confidence unless a verified
+                             // full transaction identifier is available (short Coles IDs are NOT verified).
+                             val candidates = (numberMatches + totalMatches).distinctBy { it.id }.take(30)
+                             data class CandidateAssessment(val score: Int, val high: Boolean, val description: String,
+                                 val mismatch: List<String>)
+                             val assessments = candidates.map { receipt ->
+                                 val lines = withContext(Dispatchers.IO) {
+                                     database.receiptItemDao().getItemsForReceipt(receipt.id.toLong())
+                                 }
+                                 val savedSignatures = lines.map { signature(it.quantity, it.unit, it.totalPrice) }
+                                 val savedCounts = savedSignatures.filterNotNull().groupingBy { it }.eachCount()
+                                 val stagedCounts = stagedSignatures.filterNotNull().groupingBy { it }.eachCount()
+                                 val shared = stagedCounts.entries.sumOf { (key, count) -> minOf(count, savedCounts[key] ?: 0) }
+                                 val consumedSaved = savedCounts.toMutableMap()
+                                 val unmatchedOrder = staged.mapIndexedNotNull { index, item ->
+                                     val key = stagedSignatures[index]
+                                     if (key != null && (consumedSaved[key] ?: 0) > 0) {
+                                         consumedSaved[key] = consumedSaved.getValue(key) - 1; null
+                                     } else "Coles row ${index + 1}: ${item.name} | ${item.quantity ?: "?"} ${item.unit} | $${item.price ?: "?"}"
+                                 }
+                                 val consumedStaged = stagedCounts.toMutableMap()
+                                 val unmatchedSaved = lines.mapIndexedNotNull { index, item ->
+                                     val key = savedSignatures[index]
+                                     if (key != null && (consumedStaged[key] ?: 0) > 0) {
+                                         consumedStaged[key] = consumedStaged.getValue(key) - 1; null
+                                     } else "Saved row ${index + 1}: ${item.productName} | ${item.quantity ?: "?"} ${item.unit ?: "each"} | $${item.totalPrice ?: "?"}"
+                                 }
+                                 val date = parseReceiptDateForSorting(receipt.receiptDate)
+                                 val dateMatch = date != null && orderDayMonth != null &&
+                                     date.dayOfMonth == orderDayMonth.first && date.monthValue == orderDayMonth.second
+                                 val totalMatch = receipt.totalAmount?.let { kotlin.math.abs(it - total) < 0.005 } == true
+                                 val lineCountMatch = lines.size == staged.size
+                                 val sameRetailer = receipt.storeName?.contains("coles", ignoreCase = true) == true
+                                 val comparableId = extractedId != null && receipt.receiptNumber?.trim()?.equals(extractedId, true) == true
+                                 // Retailer-specific IDs may be short or recycled. Never allow an ID alone to override a date conflict.
+                                 val coverage = shared.toDouble() / maxOf(staged.size, lines.size, 1)
+                                 // Name similarity is not scored: eReceipt names are often abbreviated and
+                                 // no validated canonical identity mapping exists yet. Avoid double-counting
+                                 // quantity/price matches as independent product-identity evidence.
+                                 val score = (if (totalMatch) 25 else 0) +
+                                     (if (dateMatch) 20 else 0) +
+                                     kotlin.math.round(15 * coverage).toInt() +
+                                     (if (lineCountMatch) 10 else 0) +
+                                     (if (sameRetailer) 5 else 0) +
+                                     (if (comparableId) 5 else 0)
+                                 // Maximum currently verifiable score is 80/100 (identity: 20 reserved).
+                                 // For now use an evidence gate rather than an unreachable 85-point threshold.
+                                 val high = totalMatch && dateMatch && lineCountMatch && coverage >= 0.70 && sameRetailer
+                                 val status = when {
+                                     high -> "HIGH-CONFIDENCE DUPLICATE — DO NOT IMPORT"
+                                     score >= 45 -> "POSSIBLE DUPLICATE — REVIEW REQUIRED"
+                                     else -> "LOW SIMILARITY — NOT VERIFIED UNIQUE"
+                                 }
+                                 CandidateAssessment(score, high,
+                                     "Receipt #${receipt.id} (${receipt.receiptDate ?: "date unknown"}): " +
+                                         "$score/100 evidence points; $shared/${staged.size} quantity/price lines; " +
+                                         "total ${if (totalMatch) "matches" else "differs"}; " +
+                                         "date ${if (dateMatch) "matches" else "unverified/differs"}. $status",
+                                     listOf("UNMATCHED COLES ORDER LINES (${unmatchedOrder.size})") + unmatchedOrder +
+                                         listOf("UNMATCHED SAVED ERECEIPT LINES (${unmatchedSaved.size})") + unmatchedSaved)
+                             }.sortedWith(compareByDescending<CandidateAssessment> { it.high }.thenByDescending { it.score })
+                             colesDuplicateStatus.value = when {
+                                 assessments.any { it.high } -> "HIGH-CONFIDENCE DUPLICATE — import blocked"
+                                 assessments.any { it.score >= 45 } -> "POSSIBLE DUPLICATE — review required"
+                                 else -> "No strong duplicate candidate — uniqueness unverified"
+                             }
+                             colesDuplicateHigh.value = assessments.any { it.high }
+                             colesDuplicatePossible.value = !colesDuplicateHigh.value && assessments.any { it.score >= 45 }
+                             colesDuplicateCheckReady.value = true
+                             colesPossibleDuplicates.value = assessments.take(5).map { it.description }
+                             colesMismatchDetails.value = assessments.firstOrNull()?.mismatch.orEmpty()
                         } catch (e: Exception) {
                             Log.w("PPColesStaging", "Read-only receipt comparison unavailable", e)
+                            colesMismatchDetails.value = emptyList()
                             colesPossibleDuplicates.value = listOf("Existing receipts could not be checked")
                             colesDuplicateStatus.value = "CHECK UNAVAILABLE"
+                            colesDuplicateCheckReady.value = false
                         }
                     }
                 } catch (e: Exception) {
@@ -602,39 +709,216 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    // Full order date is required for import; day/month alone is not sufficient for saving.
+    private fun colesStagedDate(): LocalDate? {
+        val raw = colesOrderDate.value ?: return null
+        val match = Regex("""(?i)\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b(?:[, ]+\s*(\d{4}))?""").find(raw)
+            ?: return null
+        val month = listOf("jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec")
+            .indexOf(match.groupValues[2].take(3).lowercase(Locale.ENGLISH)) + 1
+        val year = match.groupValues[3].toIntOrNull() ?: LocalDate.now().year
+        return runCatching { LocalDate.of(year, month, match.groupValues[1].toInt()) }.getOrNull()
+    }
+
+    // Repeat the cross-format check at commit time, not just on staging entry.
+    // An unavailable check fails closed. Compare immutable original Coles rows.
+    private suspend fun isColesDuplicateAtCommit(
+        date: LocalDate, total: Double, items: List<ColesStagedItem>
+    ): Boolean = withContext(Dispatchers.IO) {
+        val receipts = database.receiptDao().getAllReceipts().filter { receipt ->
+            receipt.storeName?.contains("coles", ignoreCase = true) == true &&
+            parseReceiptDateForSorting(receipt.receiptDate) == date &&
+            receipt.totalAmount?.let { kotlin.math.abs(it - total) < 0.005 } == true
+        }
+        fun signature(qty: Double?, unit: String?, price: Double?): String? {
+            if (qty == null || !qty.isFinite() || qty <= 0 || price == null || !price.isFinite() || price < 0) return null
+            return "${unit?.trim()?.lowercase(Locale.ENGLISH) ?: "each"}|${kotlin.math.round(qty * 1000).toLong()}|${kotlin.math.round(price * 100).toLong()}"
+        }
+        val counts = items.mapNotNull { signature(it.quantity, it.unit, it.price) }.groupingBy { it }.eachCount()
+        receipts.any { receipt ->
+            val saved = database.receiptItemDao().getItemsForReceipt(receipt.id.toLong())
+            if (saved.size != items.size) false else {
+                val savedCounts = saved.mapNotNull { signature(it.quantity, it.unit, it.totalPrice) }.groupingBy { it }.eachCount()
+                val shared = counts.entries.sumOf { (key, count) -> minOf(count, savedCounts[key] ?: 0) }
+                shared.toDouble() / maxOf(items.size, saved.size, 1) >= 0.70
+            }
+        }
+    }
+
+    private fun clearColesStaging() {
+        colesStagingItems.value = emptyList()
+        colesPossibleDuplicates.value = emptyList()
+        colesMismatchDetails.value = emptyList()
+        colesOrderId.value = null
+        colesOrderDate.value = null
+        colesStoreName.value = null
+        colesExpectedCount.value = null
+        colesDuplicateStatus.value = "Not checked"
+        colesDuplicateHigh.value = false
+        colesDuplicatePossible.value = false
+        colesDuplicateCheckReady.value = false
+    }
+
+    private fun openColesImportReview() {
+        lifecycleScope.launch {
+        val staged = colesStagingItems.value
+        val date = colesStagedDate()
+        if (!colesDuplicateCheckReady.value || colesDuplicateHigh.value || date == null ||
+            staged.isEmpty() || colesExpectedCount.value != staged.size ||
+            staged.any { it.name.isBlank() || it.quantity == null || it.price == null } ||
+            colesStoreName.value.isNullOrBlank()) {
+            Toast.makeText(this@MainActivity, "Order cannot be imported: review date, products or duplicate check.", Toast.LENGTH_LONG).show()
+            return@launch
+        }
+        val total = staged.sumOf { it.price ?: 0.0 }
+        val items = staged.map { item ->
+            com.example.myapplication.data.ParsedReceiptItem(
+                name = item.name, quantity = item.quantity, unit = item.unit,
+                totalPrice = item.price,
+                unitPrice = if ((item.quantity ?: 0.0) > 0.0) item.price!! / item.quantity!! else null
+            )
+        }
+        val store = colesStoreName.value!!
+        val dateString = date.format(receiptDisplayFormatter)
+        val parsed = ParsedReceipt(
+            storeName = store, receiptDate = dateString, receiptNumber = null,
+            totalAmount = total, itemCount = staged.size, products = staged.map { it.name },
+            receiptSource = "CLICK_AND_COLLECT", structuredItems = items
+        )
+        importedItemsForReview.value = items.map { item ->
+            val resolved = resolvedReviewName(store, item.name)
+            ImportReviewItem(
+                productName = resolved, originalDescription = item.name,
+                location = resolveStorageLocation(resolved), category = resolveHouseholdCategory(resolved),
+                quantity = item.quantity, unit = item.unit, unitPrice = item.unitPrice,
+                totalPrice = item.totalPrice, receiptDate = dateString
+            )
+        }
+        reviewReceiptDate.value = date.format(DateTimeFormatter.ofPattern("dd/MM/uuuu", Locale.ENGLISH))
+        reviewRetailerName.value = store
+        reviewReceiptTotal.value = String.format(Locale.US, "%.2f", total)
+        reviewDiscountAmount.value = ""
+        pendingOcrReceipt.value = parsed
+        // The raw text is a stable order marker; it is not used to infer product prices.
+        pendingOcrRawText.value = "COLES_WEB_ORDER|${date}|${colesOrderId.value.orEmpty()}|${store}|" +
+            staged.joinToString(";") { "${it.name}:${it.quantity}:${it.unit}:${it.price}" }
+        colesReviewOrigin.value = true
+        addImportedProductsToInventory.value = true
+        currentScreen.value = "IMPORT_REVIEW"
+        }
+    }
+
     @Composable
     private fun ColesStagingScreen() {
         val staged = colesStagingItems.value
         val sum = staged.sumOf { it.price ?: 0.0 }
         val missingPrices = staged.count { it.price == null }
+        var showMismatchReport by remember { mutableStateOf(false) }
+        val mismatchDetails = colesMismatchDetails.value
+        if (showMismatchReport) {
+            AlertDialog(
+                onDismissRequest = { showMismatchReport = false },
+                title = { Text("Coles / eReceipt discrepancies") },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 460.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text("Read only — no receipt or inventory changes.",
+                            style = MaterialTheme.typography.bodySmall)
+                        mismatchDetails.forEach { detail ->
+                            Text(detail, style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(vertical = 4.dp))
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showMismatchReport = false }) { Text("Close report") }
+                }
+            )
+        }
         Column(
             modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().imePadding().padding(horizontal = 12.dp, vertical = 6.dp)
         ) {
-            Text("Coles order — staging review", style = MaterialTheme.typography.titleSmall)
-            Text("${staged.size} lines · provisional $" + String.format(Locale.US, "%.2f", sum),
-                style = MaterialTheme.typography.bodyMedium)
-            Text("Edit rows below. No receipt or inventory changes.", style = MaterialTheme.typography.bodySmall)
-            Text("Coles receipt ID: ${colesOrderId.value ?: "Not identified"}", style = MaterialTheme.typography.bodySmall)
-            Text("Store: ${colesStoreName.value ?: "Not identified"}", style = MaterialTheme.typography.bodySmall)
-            Text("Expected items: ${colesExpectedCount.value?.toString() ?: "Not identified"}" +
-                (colesExpectedCount.value?.let { if (it == staged.size) " — count matches" else " — COUNT MISMATCH, review required" } ?: ""),
+            Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            // PP-158B.14: compact, customer-facing staging summary.
+            // Detection and import decisions are intentionally unchanged.
+            var showAssessmentDetails by remember { mutableStateOf(false) }
+            Text("Review your receipt", style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.padding(top = 8.dp, bottom = 12.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(colesStoreName.value ?: "Coles", style = MaterialTheme.typography.titleMedium)
+                    Text("$" + String.format(Locale.US, "%.2f", sum),
+                        style = MaterialTheme.typography.headlineMedium)
+                    Text("${colesOrderDate.value ?: "Date not identified"} · ${staged.size} products",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val checked = colesDuplicateCheckReady.value
+                    val high = colesDuplicateHigh.value
+                    val possible = colesDuplicatePossible.value
+                    val statusTitle = when {
+                        !checked -> "Checking receipt"
+                        high -> "Receipt already imported"
+                        possible -> "Possible duplicate"
+                        else -> "Ready to review"
+                    }
+                    val statusMessage = when {
+                        !checked -> "Please wait while PantryPal checks your saved receipts."
+                        high -> "This purchase appears to be saved in PantryPal already. To prevent duplicate entries, it cannot be imported again."
+                        possible -> "This receipt resembles a saved purchase. Please check the details before choosing to continue."
+                        else -> "No matching saved receipt was detected. Review the products before confirming an import."
+                    }
+                    Text(statusTitle, style = MaterialTheme.typography.titleMedium,
+                        color = if (high || possible) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
+                    Text(statusMessage, style = MaterialTheme.typography.bodyMedium)
+                    if (missingPrices > 0) {
+                        Text("$missingPrices product prices need review before import.",
+                            color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                    val expected = colesExpectedCount.value
+                    if (expected != null && expected != staged.size) {
+                        Text("Product count needs review: expected $expected, found ${staged.size}.",
+                            color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            TextButton(onClick = { showAssessmentDetails = !showAssessmentDetails }) {
+                Text(if (showAssessmentDetails) "Hide comparison details" else "View comparison details")
+            }
+            if (showAssessmentDetails) {
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Coles receipt ID: ${colesOrderId.value ?: "Not identified"}",
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("Duplicate assessment: ${colesDuplicateStatus.value}",
+                        style = MaterialTheme.typography.bodySmall)
+                    colesPossibleDuplicates.value.forEach {
+                        Text(it, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text("The evidence score is not a probability. Product identity scoring remains reserved pending validation.",
+                        style = MaterialTheme.typography.bodySmall)
+                    if (mismatchDetails.isNotEmpty()) {
+                        OutlinedButton(onClick = { showMismatchReport = true }) {
+                            Text("View full discrepancy report")
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Text("Products (${staged.size})", style = MaterialTheme.typography.titleMedium)
+            Text("Check names, quantities and prices before importing.",
                 style = MaterialTheme.typography.bodySmall)
-            Text("Order date: ${colesOrderDate.value ?: "Not identified"}", style = MaterialTheme.typography.bodySmall)
-            Text("Duplicate check: ${colesDuplicateStatus.value}", style = MaterialTheme.typography.bodySmall)
-            if (missingPrices > 0) {
-                Text("$missingPrices prices still need review", color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall)
-            }
-            val possible = colesPossibleDuplicates.value
-            if (possible.isNotEmpty()) {
-                Text("POSSIBLE DUPLICATE / CHECK REQUIRED", color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.labelMedium)
-                possible.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
-                Text("Total and item count alone cannot identify an order.", style = MaterialTheme.typography.bodySmall)
-            }
+            Spacer(modifier = Modifier.height(8.dp))
             HorizontalDivider()
-            LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(vertical = 6.dp)) {
-                items(staged.size) { index ->
+            staged.indices.forEach { index ->
                     val item = staged[index]
                     // Remember text locally so partially typed numbers remain editable.
                     var nameText by remember(index, item.name) { mutableStateOf(item.name) }
@@ -683,18 +967,26 @@ class MainActivity : ComponentActivity() {
                     HorizontalDivider()
                 }
             }
-            Button(onClick = {
-                colesStagingItems.value = emptyList()
-                colesPossibleDuplicates.value = emptyList()
-                colesOrderId.value = null
-                colesOrderDate.value = null
-                colesStoreName.value = null
-                colesExpectedCount.value = null
-                colesDuplicateStatus.value = "Not checked"
-                currentScreen.value = "HOME"
-            }, modifier = Modifier.fillMaxWidth()) { Text("Close staging preview") }
-            Text("Import disabled — identity and duplicate checks pending.",
-                style = MaterialTheme.typography.labelSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = {
+                    clearColesStaging()
+                    currentScreen.value = "HOME"
+                }, modifier = Modifier.weight(1f)) { Text("Decline / Home") }
+                Button(onClick = { openColesImportReview() },
+                    enabled = colesDuplicateCheckReady.value && !colesDuplicateHigh.value &&
+                        !colesDuplicatePossible.value && colesStagedDate() != null && missingPrices == 0,
+                    modifier = Modifier.weight(1f)) { Text("Review import") }
+            }
+            if (colesDuplicatePossible.value) {
+                var allowPossible by remember { mutableStateOf(false) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = allowPossible, onCheckedChange = { allowPossible = it })
+                    Text("I have checked this possible duplicate and want to review import", style = MaterialTheme.typography.bodySmall)
+                }
+                Button(onClick = { openColesImportReview() }, enabled = allowPossible && colesDuplicateCheckReady.value,
+                    modifier = Modifier.fillMaxWidth()) { Text("Continue with warning") }
+            }
+            if (!colesDuplicateCheckReady.value) Text("Duplicate check unavailable or pending — import disabled", style = MaterialTheme.typography.labelSmall)
         }
     }
 
@@ -1873,6 +2165,23 @@ class MainActivity : ComponentActivity() {
                                 // OCR IMPORT - DUPLICATE PROTECTION
                                 // ============================================================
 
+                                if (colesReviewOrigin.value) {
+                                    val stagedDate = colesStagedDate()
+                                    val staged = colesStagingItems.value
+                                    val stagedTotal = staged.sumOf { it.price ?: 0.0 }
+                                    val duplicate = try {
+                                        stagedDate == null || !colesDuplicateCheckReady.value ||
+                                            isColesDuplicateAtCommit(stagedDate, stagedTotal, staged)
+                                    } catch (e: Exception) {
+                                        Log.e("PPColesImport", "Duplicate recheck failed; blocking import", e)
+                                        true
+                                    }
+                                    if (duplicate) {
+                                        Toast.makeText(this@MainActivity, "Coles order may already exist. Import blocked.", Toast.LENGTH_LONG).show()
+                                        return@launch
+                                    }
+                                }
+
                                 val fingerprint =
                                     generateReceiptFingerprint(rawText)
 
@@ -2139,6 +2448,7 @@ class MainActivity : ComponentActivity() {
 
                                 pendingOcrReceipt.value = null
                                 pendingOcrRawText.value = null
+                                if (colesReviewOrigin.value) { clearColesStaging(); colesReviewOrigin.value = false }
                                 reviewDiscountAmount.value = ""
                                 importedItemsForReview.value =
                                     emptyList()
@@ -2172,6 +2482,7 @@ class MainActivity : ComponentActivity() {
                     onClick = {
                         pendingOcrReceipt.value = null
                         pendingOcrRawText.value = null
+                        if (colesReviewOrigin.value) { clearColesStaging(); colesReviewOrigin.value = false }
                         importedItemsForReview.value = emptyList()
 
                         currentScreen.value = "HOME"
